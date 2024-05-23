@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from audio_separator.separator import Separator
 from starlette.responses import StreamingResponse
 import os
@@ -9,6 +9,11 @@ import uuid
 from pathlib import Path
 
 app = FastAPI()
+
+def file_streamer(filename):
+    with open(filename, "rb") as f:
+        yield from f
+    os.remove(filename)
 
 # Check if CUDA is available and print the result
 cuda_available = torch.cuda.is_available()
@@ -86,6 +91,21 @@ async def separate_vocals(file: UploadFile = File(...)):
     os.remove(unique_filename)
 
     return StreamingResponse(open(mp3_file_path, "rb"), media_type="audio/mpeg")
+
+@app.post("/download_youtube")
+async def download_youtube(link: str):
+    # Generate a unique filename for the downloaded video
+    filename = str(uuid.uuid4()) + ".m4a"
+
+    # Run yt-dlp as a subprocess to download the video
+    result = subprocess.run(["yt-dlp", link, "-f", "ba", "-o", filename, ], capture_output=True, text=True)
+
+    # If the subprocess exited with a non-zero status code, raise an HTTP exception with the error output
+    if result.returncode != 0:
+        raise HTTPException(status_code=500, detail=result.stderr)
+
+     # If the file was downloaded successfully, return the file as a StreamingResponse
+    return StreamingResponse(file_streamer(filename), media_type="audio/mpeg")
 
 if __name__ == "__main__":
     uvicorn.run("seperate:app", host="0.0.0.0", port=8100, log_level="info")
