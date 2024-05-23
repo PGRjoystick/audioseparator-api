@@ -16,6 +16,9 @@ print("CUDA is available: ", cuda_available)
 # Print the PyTorch version
 print("PyTorch version: ", torch.__version__)
 
+# Initialize the Separator class
+separator = Separator(output_dir="output")
+
 @app.post("/separate_instrumental")
 async def separate_instrumental(file: UploadFile = File(...)):
     # Save the uploaded file to disk
@@ -24,9 +27,7 @@ async def separate_instrumental(file: UploadFile = File(...)):
     with open(unique_filename, "wb") as f:
         f.write(await file.read())
 
-
-    # Initialize the Separator class
-    separator = Separator(output_dir="output")
+    separator.output_single_stem = 'instrumental'
 
     # Load a machine learning model
     separator.load_model()
@@ -60,8 +61,7 @@ async def separate_vocals(file: UploadFile = File(...)):
     with open(unique_filename, "wb") as f:
         f.write(await file.read())
 
-    # Initialize the Separator class
-    separator = Separator(output_dir="output")
+    separator.output_single_stem = 'vocals'
 
     # Load a machine learning model
     separator.load_model()
