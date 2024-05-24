@@ -69,7 +69,7 @@ async def separate_vocals(file: UploadFile = File(...)):
     separator.output_single_stem = 'vocals'
 
     # Load a machine learning model
-    separator.load_model()
+    separator.load_model(model_filename='Kim_Vocal_2.onnx')
 
     # Perform the separation on the uploaded file
     output_files = separator.separate(unique_filename)
@@ -92,7 +92,7 @@ async def separate_vocals(file: UploadFile = File(...)):
 
     return StreamingResponse(open(mp3_file_path, "rb"), media_type="audio/mpeg")
 
-@app.post("/download_youtube")
+@app.post("/download_youtube_audio")
 async def download_youtube(link: str):
     # Generate a unique filename for the downloaded video
     filename = str(uuid.uuid4()) + ".m4a"
