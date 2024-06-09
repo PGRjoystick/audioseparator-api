@@ -8,6 +8,8 @@ __pycache__/
 
 # output files
 output/
+boosted_converted_output/
+final_output/
 
 # Distribution / packaging
 .Python
