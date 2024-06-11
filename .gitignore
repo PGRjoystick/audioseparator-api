@@ -10,6 +10,8 @@ __pycache__/
 output/
 boosted_converted_output/
 final_output/
+stereo_output/
+upload/
 
 # Distribution / packaging
 .Python

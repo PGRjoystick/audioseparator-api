@@ -38,9 +38,6 @@ print("CUDA is available: ", cuda_available)
 # Print the PyTorch version
 print("PyTorch version: ", torch.__version__)
 
-# Initialize the Separator class
-separator = Separator(output_dir="output")
-
 @app.post("/separate_instrumental")
 async def separate_instrumental(file: UploadFile = File(...)):
     # Save the uploaded file to disk
@@ -49,10 +46,13 @@ async def separate_instrumental(file: UploadFile = File(...)):
     with open(unique_filename, "wb") as f:
         f.write(await file.read())
 
+    # Initialize the Separator class
+    separator = Separator(output_dir="output")
+
     separator.output_single_stem = 'instrumental'
 
     # Load a machine learning model
-    separator.load_model()
+    separator.load_model(model_filename='UVR-MDX-NET-Inst_full_292.onnx')
 
     # Perform the separation on the uploaded file
     output_files = separator.separate(unique_filename)
@@ -83,6 +83,9 @@ async def separate_vocals(file: UploadFile = File(...)):
     with open(unique_filename, "wb") as f:
         f.write(await file.read())
 
+    # Initialize the Separator class
+    separator = Separator(output_dir="output")
+
     separator.output_single_stem = 'vocals'
 
     # Load a machine learning model
@@ -109,10 +112,14 @@ async def separate_vocals(file: UploadFile = File(...)):
 
     return StreamingResponse(open(mp3_file_path, "rb"), media_type="audio/mpeg")
 
+def convert_mono_to_stereo(input_path: str, output_path: str):
+    command = ['ffmpeg', '-i', input_path, '-ac', '2', output_path]
+    subprocess.run(command, check=True)
+
 def merge_audio(instrumental_path: str, vocal_path: str, output_path: str):
     command = [
         'ffmpeg', '-i', instrumental_path, '-i', vocal_path, '-filter_complex',
-        '[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=2,volume=7dB[out]',
+        '[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=2,volume=4dB[out]',
         '-map', '[out]', '-b:a', '128k', '-f', 'opus', output_path
     ]
     subprocess.run(command, check=True)
@@ -125,6 +132,9 @@ async def sing_audio(file: UploadFile = File(...), model_name: str = Form(...), 
     with open(unique_filename, "wb") as f:
         f.write(await file.read())
 
+    # Initialize the Separator class
+    separator = Separator(output_dir="output")
+
     # Load a machine learning model
     separator.load_model(model_filename='Kim_Vocal_2.onnx')
 
@@ -133,12 +143,20 @@ async def sing_audio(file: UploadFile = File(...), model_name: str = Form(...), 
 
     print(f"Separation complete! Output file(s): {' '.join(output_files)}")
 
-    # Find the vocal and instrumental files
+    # Find the vocal file
     output_file_vocals = next((f for f in output_files if "_(Vocals)_" in f), None)
     output_file_instrumental = next((f for f in output_files if "_(Instrumental)_" in f), None)
-    if output_file_vocals is None or output_file_instrumental is None:
-        raise Exception("Vocal or Instrumental file not found")
+    if output_file_vocals is None:
+        raise Exception("Vocal file not found")
 
+    # Perform additional separation phases
+    models_stems = {'UVR-MDX-NET_Crowd_HQ_1.onnx': 1, 'Reverb_HQ_By_FoxJoy.onnx': 0}
+    for model, stem in models_stems.items():
+        separator.load_model(model_filename=model)
+        output_file_vocals = os.path.join("output", output_file_vocals)
+        output_file_vocals = separator.separate(output_file_vocals)[stem]
+
+    print(output_file_vocals);
     # Convert the vocal output file to MP3
     vocal_file_path = os.path.join("output", output_file_vocals)
     instrumental_file_path = os.path.join("output", output_file_instrumental)
@@ -176,7 +194,12 @@ async def sing_audio(file: UploadFile = File(...), model_name: str = Form(...), 
     # Merge the boosted vocal file with the instrumental file
     merged_file_name = 'merged_' + unique_filename
     merged_file_path = os.path.join(output_directory, merged_file_name)
-    merge_audio(instrumental_file_path, boosted_vocal_file_path, merged_file_path)
+    # Convert the vocal file to stereo
+    stereo_vocal_file_path = 'stereo_' + mp3_vocal_file_path
+    convert_mono_to_stereo(boosted_vocal_file_path, stereo_vocal_file_path)
+
+    # Merge the stereo vocal file with the instrumental file
+    merge_audio(instrumental_file_path, stereo_vocal_file_path, merged_file_path)
 
     # Delete the original uploaded file
     os.remove(instrumental_file_path)
