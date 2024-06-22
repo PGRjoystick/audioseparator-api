@@ -13,9 +13,12 @@ from fastapi.responses import JSONResponse
 from fastapi.responses import StreamingResponse
 from fastapi import UploadFile
 from starlette.responses import StreamingResponse
-import aiofiles
+from dotenv import load_dotenv
+import requests
 
 app = FastAPI()
+load_dotenv()
+voice2voice_endpoint = os.getenv('VOICE2VOICE_ENDPOINT')
 
 import time
 
@@ -125,7 +128,19 @@ def merge_audio(instrumental_path: str, vocal_path: str, output_path: str):
     subprocess.run(command, check=True)
 
 @app.post("/sing_audio")
-async def sing_audio(file: UploadFile = File(...), model_name: str = Form(...), index_path: str = Form(...), f0up_key: int = Form(...), f0method: str = Form(...), index_rate: float = Form(...), device: str = Form(...), is_half: bool = Form(...), filter_radius: int = Form(...), resample_sr: int = Form(...), rms_mix_rate: float = Form(...), protect: float = Form(...)):
+async def sing_audio(file: UploadFile = File(..., description="The audio file to process."),
+                    model_name: str = Form("AyanaAoba.pth", description="Name of the voice model to use."),
+                    index_path: str = Form("added_IVF256_Flat_nprobe_1_AyanaAoba_v2.index", description="Path to the index file of the voice model."),
+                    f0up_key: int = Form(7, description="Transpose (integer, number of semitones, raise by an octave: 12, lower by an octave: -12)."),
+                    f0method: str = Form("rmvpe", description="Select the pitch extraction algorithm ('pm': faster extraction but lower-quality speech; 'harvest': better bass but extremely slow; 'crepe': better quality but GPU intensive), 'rmvpe': best quality, and little GPU requirement"),
+                    index_rate: float = Form(0.76, description="Search feature ratio (controls accent strength, too high has artifacting)"),
+                    device: str = Form("cuda", description="Select devices used to infer the model ('cpu', 'cuda', 'cuda:0', 'cuda:1', etc.)"),
+                    is_half: bool = Form(False, description="Whether to use half precision."),
+                    filter_radius: int = Form(4, description="If >=3: apply median filtering to the harvested pitch results. The value represents the filter radius and can reduce breathiness."),
+                    resample_sr: int = Form(0, description="Resample the output audio in post-processing to the final sample rate. Set to 0 for no resampling"),
+                    rms_mix_rate: float = Form(0.6, description="Adjust the volume envelope scaling. Closer to 0, the more it mimicks the volume of the original vocals. Can help mask noise and make volume sound more natural when set relatively low. Closer to 1 will be more of a consistently loud volume."),
+                    protect: float = Form(0.3, description="Protect voiceless consonants and breath sounds to prevent artifacts such as tearing in electronic music. Set to 0.5 to disable. Decrease the value to increase protection, but it may reduce indexing accuracy."),
+                    multi_process_vocal: bool = Form(False, description="When multi process vocal is set to true, the UVR server will process the vocal stem further using additional model with 'UVR-MDX-NET_Crowd_HQ_1.onnx' and 'Reverb_HQ_By_FoxJoy.onnx'. This will increase the processing time. but this will clean additional reverb and crowd noise from the vocal stem. potentially making the vocal stem sound cleaner with music that has more reverb and crowd noise.")):
     # Save the uploaded file to disk
     filename = Path(file.filename).name
     unique_filename = str(uuid.uuid4()) + "_" + filename
@@ -149,12 +164,12 @@ async def sing_audio(file: UploadFile = File(...), model_name: str = Form(...), 
     if output_file_vocals is None:
         raise Exception("Vocal file not found")
 
-    # Perform additional separation phases
-    models_stems = {'UVR-MDX-NET_Crowd_HQ_1.onnx': 1, 'Reverb_HQ_By_FoxJoy.onnx': 0}
-    for model, stem in models_stems.items():
-        separator.load_model(model_filename=model)
-        output_file_vocals = os.path.join("output", output_file_vocals)
-        output_file_vocals = separator.separate(output_file_vocals)[stem]
+    if multi_process_vocal:
+        models_stems = {'UVR-MDX-NET_Crowd_HQ_1.onnx': 1, 'Reverb_HQ_By_FoxJoy.onnx': 0}
+        for model, stem in models_stems.items():
+            separator.load_model(model_filename=model)
+            output_file_vocals = os.path.join("output", output_file_vocals)
+            output_file_vocals = separator.separate(output_file_vocals)[stem]
 
     print(output_file_vocals);
     # Convert the vocal output file to MP3
@@ -169,7 +184,7 @@ async def sing_audio(file: UploadFile = File(...), model_name: str = Form(...), 
     # Post the vocal file to voice2voice service
     print("#################### Posting the vocal file to voice2voice service...")
     with open(mp3_vocal_file_path, 'rb') as f:
-        response = requests.post('http://localhost:8001/voice2voice', files={'input_file': f}, params={'model_name': model_name, 'index_path': index_path, 'f0up_key': f0up_key, 'f0method': f0method, 'index_rate': index_rate, 'device': device, 'is_half': is_half, 'filter_radius': filter_radius, 'resample_sr': resample_sr, 'rms_mix_rate': rms_mix_rate, 'protect': protect}, stream=True)
+        response = requests.post(voice2voice_endpoint, files={'input_file': f}, params={'model_name': model_name, 'index_path': index_path, 'f0up_key': f0up_key, 'f0method': f0method, 'index_rate': index_rate, 'device': device, 'is_half': is_half, 'filter_radius': filter_radius, 'resample_sr': resample_sr, 'rms_mix_rate': rms_mix_rate, 'protect': protect}, stream=True)
     converted_vocal_file_path = 'converted_' + mp3_vocal_file_path
 
     with open(converted_vocal_file_path, 'wb') as f:
@@ -208,7 +223,33 @@ async def sing_audio(file: UploadFile = File(...), model_name: str = Form(...), 
 
     return StreamingResponse(open(merged_file_path, "rb"), media_type="audio/mpeg")
 
+@app.post("/download_youtube_audio")
+async def download_youtube(link: str):
+    filename_mp3 = download_youtube_audio_and_convert(link)
+    file_like = open(filename_mp3, mode="rb")
+    return StreamingResponse(file_like, media_type="audio/mpeg")
 
+def download_youtube_audio_and_convert(link: str):
+    # Generate a unique filename for the downloaded video
+    filename_webm = str(uuid.uuid4()) + ".webm"
+    filename_mp3 = filename_webm.replace(".webm", ".mp3")
+
+    # Run yt-dlp as a subprocess to download the video
+    yt_dlp_result = subprocess.run(["yt-dlp", link, "-f", "ba", "-o", filename_webm], capture_output=True, text=True)
+
+    # If yt-dlp subprocess exited with a non-zero status code, raise an HTTP exception
+    if yt_dlp_result.returncode != 0:
+        raise HTTPException(status_code=500, detail=yt_dlp_result.stderr)
+
+    # Convert the downloaded video to mp3 using ffmpeg
+    ffmpeg_result = subprocess.run(["ffmpeg", "-i", filename_webm, filename_mp3], capture_output=True, text=True)
+
+    # If ffmpeg subprocess exited with a non-zero status code, raise an HTTP exception
+    if ffmpeg_result.returncode != 0:
+        raise HTTPException(status_code=500, detail=ffmpeg_result.stderr)
+
+    # Return the filename of the mp3 file
+    return filename_mp3
 
 def download_youtube_audio(link: str):
     # Generate a unique filename for the downloaded video
@@ -223,21 +264,49 @@ def download_youtube_audio(link: str):
 
     return filename
 
-@app.post("/download_youtube_audio")
-async def download_youtube(link: str):
-    filename = download_youtube_audio(link)
+def download_youtube_video(link: str):
+    # Generate a unique filename for the downloaded video
+    filename = str(uuid.uuid4()) + ".webm"
+
+    # Run yt-dlp as a subprocess to download the video
+    result = subprocess.run(["yt-dlp", link, "-o", filename, ], capture_output=True, text=True)
+
+    # If the subprocess exited with a non-zero status code, raise an HTTP exception with the error output
+    if result.returncode != 0:
+        raise HTTPException(status_code=500, detail=result.stderr)
+
+    return filename
+
+@app.post("/download_youtube_video")
+async def dl_youtube(link: str):
+    filename = download_youtube_video(link)
     file_like = open(filename, mode="rb")
-    return StreamingResponse(file_like, media_type="audio/webm")
+    return StreamingResponse(file_like, media_type="video/mp4")
+
+
 
 @app.post("/sing_youtube")
-async def sing_youtube(link: str, model_name: str = Form(...), index_path: str = Form(...), f0up_key: int = Form(...), f0method: str = Form(...), index_rate: float = Form(...), device: str = Form(...), is_half: bool = Form(...), filter_radius: int = Form(...), resample_sr: int = Form(...), rms_mix_rate: float = Form(...), protect: float = Form(...)):
+async def sing_youtube( link: str,                   
+                        model_name: str = Form("AyanaAoba.pth", description="Name of the voice model to use."),
+                        index_path: str = Form("added_IVF256_Flat_nprobe_1_AyanaAoba_v2.index", description="Path to the index file of the voice model."),
+                        f0up_key: int = Form(7, description="Transpose (integer, number of semitones, raise by an octave: 12, lower by an octave: -12)."),
+                        f0method: str = Form("rmvpe", description="Select the pitch extraction algorithm ('pm': faster extraction but lower-quality speech; 'harvest': better bass but extremely slow; 'crepe': better quality but GPU intensive), 'rmvpe': best quality, and little GPU requirement"),
+                        index_rate: float = Form(0.76, description="Search feature ratio (controls accent strength, too high has artifacting)"),
+                        device: str = Form("cuda", description="Select devices used to infer the model ('cpu', 'cuda', 'cuda:0', 'cuda:1', etc.)"),
+                        is_half: bool = Form(False, description="Whether to use half precision."),
+                        filter_radius: int = Form(4, description="If >=3: apply median filtering to the harvested pitch results. The value represents the filter radius and can reduce breathiness."),
+                        resample_sr: int = Form(0, description="Resample the output audio in post-processing to the final sample rate. Set to 0 for no resampling"),
+                        rms_mix_rate: float = Form(0.6, description="Adjust the volume envelope scaling. Closer to 0, the more it mimicks the volume of the original vocals. Can help mask noise and make volume sound more natural when set relatively low. Closer to 1 will be more of a consistently loud volume."),
+                        protect: float = Form(0.3, description="Protect voiceless consonants and breath sounds to prevent artifacts such as tearing in electronic music. Set to 0.5 to disable. Decrease the value to increase protection, but it may reduce indexing accuracy."),
+                        multi_process_vocal: bool = Form(False, description="When multi process vocal is set to true, the UVR server will process the vocal stem further using additional model with 'UVR-MDX-NET_Crowd_HQ_1.onnx' and 'Reverb_HQ_By_FoxJoy.onnx'. This will increase the processing time. but this will clean additional reverb and crowd noise from the vocal stem. potentially making the vocal stem sound cleaner with music that has more reverb and crowd noise.")):
+    
     # Download the YouTube audio
     filename = download_youtube_audio(link)
 
     # Call the sing_audio function with the downloaded file
     with open(filename, 'rb') as f:
         upload_file = UploadFile(filename=filename, file=f)
-        return await sing_audio(upload_file, model_name, index_path, f0up_key, f0method, index_rate, device, is_half, filter_radius, resample_sr, rms_mix_rate, protect)
+        return await sing_audio(upload_file, model_name, index_path, f0up_key, f0method, index_rate, device, is_half, filter_radius, resample_sr, rms_mix_rate, protect, multi_process_vocal)
 
 if __name__ == "__main__":
-    uvicorn.run("seperate:app", host="0.0.0.0", port=8100, log_level="info")
+    uvicorn.run("separate:app", host="0.0.0.0", port=8100, log_level="info")
