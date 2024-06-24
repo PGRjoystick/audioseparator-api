@@ -50,10 +50,14 @@ Contributions to AudioSeparator-API are welcome! Whether it's through submitting
 
 ## License
 
-This project is licensed under MIT license - see the LICENSE file for details.
+This project is licensed under the MIT [License](LICENSE).
+
+- **Please Note:** If you choose to integrate this project into some other project using the default model or any other model trained as part of the [UVR](https://github.com/Anjok07/ultimatevocalremovergui) and [RVC](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI) project, please honor the MIT license by providing credit to UVR and RVC and its developers!
 
 ## Acknowledgments
 
 - [Anjok07](https://github.com/Anjok07) - Author of [Ultimate Vocal Remover GUI](https://github.com/Anjok07/ultimatevocalremovergui), which almost all of the code in [audioseparator](https://github.com/karaokenerds/python-audio-separator) library was copied from! Definitely deserving of credit for anything good from this project. Thank you!
 - [beaverdb](https://github.com/beveradb) a.k.a [karaokenerds](https://github.com/karaokenerds) for developing the [audioseparator](https://github.com/karaokenerds/python-audio-separator) library. thank you!
 - Gratitude to the RVC-Project team for their work on the [Retrieval-based Voice Conversion WebUI](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI).
+- [Kuielab & Woosung Choi](https://github.com/kuielab) - Developed the original MDX-Net AI code.
+- [KimberleyJSN](https://github.com/KimberleyJensen) - Advised and aided the implementation of the training scripts for MDX-Net and Demucs. Thank you!
