@@ -165,13 +165,14 @@ async def sing_audio(file: UploadFile = File(..., description="The audio file to
         raise Exception("Vocal file not found")
 
     if multi_process_vocal:
-        models_stems = {'UVR-MDX-NET_Crowd_HQ_1.onnx': 1, 'Reverb_HQ_By_FoxJoy.onnx': 0}
+        separator = Separator(output_dir="output", vr_params={"batch_size": 2, "window_size": 512, "aggression": 5})
+        models_stems = {'UVR-DeEcho-DeReverb.pth': 0, 'UVR-De-Echo-Normal.pth': 0, '5_HP-Karaoke-UVR.pth': 1}
         for model, stem in models_stems.items():
             separator.load_model(model_filename=model)
             output_file_vocals = os.path.join("output", output_file_vocals)
             output_file_vocals = separator.separate(output_file_vocals)[stem]
 
-    print(output_file_vocals);
+    print(output_file_vocals)
     # Convert the vocal output file to MP3
     vocal_file_path = os.path.join("output", output_file_vocals)
     instrumental_file_path = os.path.join("output", output_file_instrumental)
