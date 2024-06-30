@@ -15,6 +15,9 @@ from fastapi import UploadFile
 from starlette.responses import StreamingResponse
 from dotenv import load_dotenv
 import requests
+import re
+from fastapi.responses import FileResponse
+import shutil
 
 app = FastAPI()
 load_dotenv()
@@ -127,6 +130,15 @@ def merge_audio(instrumental_path: str, vocal_path: str, output_path: str):
     ]
     subprocess.run(command, check=True)
 
+def extract_youtube_video_id(url):
+    # Regex pattern to match YouTube video IDs from various URL formats
+    pattern = r'(?:youtube\.com\/(?:[^\/\n\s]+\/\S+\/|(?:v|e(?:mbed)?)\/|\S*?[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})'
+    match = re.search(pattern, url)
+    if match:
+        return match.group(1)
+    else:
+        return None
+
 @app.post("/sing_audio")
 async def sing_audio(file: UploadFile = File(..., description="The audio file to process."),
                     model_name: str = Form("AyanaAoba.pth", description="Name of the voice model to use."),
@@ -140,22 +152,36 @@ async def sing_audio(file: UploadFile = File(..., description="The audio file to
                     resample_sr: int = Form(0, description="Resample the output audio in post-processing to the final sample rate. Set to 0 for no resampling"),
                     rms_mix_rate: float = Form(0.6, description="Adjust the volume envelope scaling. Closer to 0, the more it mimicks the volume of the original vocals. Can help mask noise and make volume sound more natural when set relatively low. Closer to 1 will be more of a consistently loud volume."),
                     protect: float = Form(0.3, description="Protect voiceless consonants and breath sounds to prevent artifacts such as tearing in electronic music. Set to 0.5 to disable. Decrease the value to increase protection, but it may reduce indexing accuracy."),
-                    multi_process_vocal: bool = Form(False, description="When multi process vocal is set to true, the UVR server will process the vocal stem further using additional model with 'UVR-MDX-NET_Crowd_HQ_1.onnx' and 'Reverb_HQ_By_FoxJoy.onnx'. This will increase the processing time. but this will clean additional reverb and crowd noise from the vocal stem. potentially making the vocal stem sound cleaner with music that has more reverb and crowd noise.")):
-    # Save the uploaded file to disk
-    filename = Path(file.filename).name
-    unique_filename = str(uuid.uuid4()) + "_" + filename
-    with open(unique_filename, "wb") as f:
-        f.write(await file.read())
+                    multi_process_vocal: bool = Form(False, description="When multi process vocal is set to true, the UVR server will process the vocal stem further using additional model with 'UVR-MDX-NET_Crowd_HQ_1.onnx' and 'Reverb_HQ_By_FoxJoy.onnx'. This will increase the processing time. but this will clean additional reverb and crowd noise from the vocal stem. potentially making the vocal stem sound cleaner with music that has more reverb and crowd noise."),
+                    link: Optional[str] = Form(None, description="Link to the YouTube video to process.")):
+    
+    if link:
+        video_id = extract_youtube_video_id(link)
+        # Determine the inferMode based on multi_process_vocal value
+        inferMode = "full" if multi_process_vocal else "fast"
+        # Construct the file name prefix to check
+        file_name_prefix = f"{video_id}_{model_name}_{f0up_key}_{inferMode}"
+        # Save the uploaded file to disk
+        filename = Path(file.filename).name
+        unique_filename = str(file_name_prefix)
+        with open(unique_filename, "wb") as f:
+            f.write(await file.read())
+    else :
+        # Save the uploaded file to disk
+        filename = Path(file.filename).name
+        unique_filename = str(uuid.uuid4())
+        with open(unique_filename, "wb") as f:
+            f.write(await file.read())
 
     # Initialize the Separator class
     separator = Separator(output_dir="output")
-
+    
     # Load a machine learning model
     separator.load_model(model_filename='Kim_Vocal_2.onnx')
-
+    
     # Perform the separation on the uploaded file
     output_files = separator.separate(unique_filename)
-
+    os.remove(unique_filename)
     print(f"Separation complete! Output file(s): {' '.join(output_files)}")
 
     # Find the vocal file
@@ -208,7 +234,7 @@ async def sing_audio(file: UploadFile = File(..., description="The audio file to
     output_directory = "final_output"
 
     # Merge the boosted vocal file with the instrumental file
-    merged_file_name = 'merged_' + unique_filename
+    merged_file_name = file_name_prefix + "_merged.mp3"
     merged_file_path = os.path.join(output_directory, merged_file_name)
     # Convert the vocal file to stereo
     stereo_vocal_file_path = 'stereo_' + mp3_vocal_file_path
@@ -220,7 +246,12 @@ async def sing_audio(file: UploadFile = File(..., description="The audio file to
     # Delete the original uploaded file
     os.remove(instrumental_file_path)
     os.remove(boosted_vocal_file_path)
-    os.remove(unique_filename)
+    os.remove(stereo_vocal_file_path)
+    output_directory = "output"
+    # Remove everything in the output directory
+    shutil.rmtree(output_directory)
+    # Recreate the output directory to ensure it exists for future operations
+    os.makedirs(output_directory, exist_ok=True)
 
     return StreamingResponse(open(merged_file_path, "rb"), media_type="audio/mpeg")
 
@@ -253,11 +284,13 @@ def download_youtube_audio_and_convert(link: str):
     return filename_mp3
 
 def download_youtube_audio(link: str):
-    # Generate a unique filename for the downloaded video
-    filename = str(uuid.uuid4()) + ".webm"
+    video_id = extract_youtube_video_id(link)
+    download_dir = Path('download')
+    download_dir.mkdir(parents=True, exist_ok=True)  # Ensure the directory exists
+    filename = download_dir / f"{video_id}.webm"
 
     # Run yt-dlp as a subprocess to download the video
-    result = subprocess.run(["yt-dlp", link, "-f", "ba", "-o", filename, ], capture_output=True, text=True)
+    result = subprocess.run(["yt-dlp", link, "-f", "ba", "-o", str(filename)], capture_output=True, text=True)
 
     # If the subprocess exited with a non-zero status code, raise an HTTP exception with the error output
     if result.returncode != 0:
@@ -301,13 +334,35 @@ async def sing_youtube( link: str,
                         protect: float = Form(0.3, description="Protect voiceless consonants and breath sounds to prevent artifacts such as tearing in electronic music. Set to 0.5 to disable. Decrease the value to increase protection, but it may reduce indexing accuracy."),
                         multi_process_vocal: bool = Form(False, description="When multi process vocal is set to true, the UVR server will process the vocal stem further using additional model with 'UVR-MDX-NET_Crowd_HQ_1.onnx' and 'Reverb_HQ_By_FoxJoy.onnx'. This will increase the processing time. but this will clean additional reverb and crowd noise from the vocal stem. potentially making the vocal stem sound cleaner with music that has more reverb and crowd noise.")):
     
-    # Download the YouTube audio
-    filename = download_youtube_audio(link)
+    # Check if the link is available
+    video_id = extract_youtube_video_id(link)
+
+    # Determine the inferMode based on multi_process_vocal value
+    inferMode = "full" if multi_process_vocal else "fast"
+
+    # Construct the file name prefix to check
+    file_name_prefix = f"{video_id}_{model_name}_{f0up_key}_{inferMode}"
+
+    # Check if the video id is available on disk in the 'final_output' directory
+    final_output_dir = Path('final_output')
+    file_found = None
+    for file in final_output_dir.iterdir():
+        if file.is_file() and file.name.startswith(file_name_prefix):
+            # File exists, return a streaming response
+            file_found = file
+            break
+
+    if file_found:
+        return FileResponse(path=file_found, media_type='audio/mpeg')
+    else:
+        # Download the YouTube audio
+        filename = download_youtube_audio(link)
+
 
     # Call the sing_audio function with the downloaded file
     with open(filename, 'rb') as f:
         upload_file = UploadFile(filename=filename, file=f)
-        return await sing_audio(upload_file, model_name, index_path, f0up_key, f0method, index_rate, device, is_half, filter_radius, resample_sr, rms_mix_rate, protect, multi_process_vocal)
+        return await sing_audio(upload_file, model_name, index_path, f0up_key, f0method, index_rate, device, is_half, filter_radius, resample_sr, rms_mix_rate, protect, multi_process_vocal, link=link)
 
 if __name__ == "__main__":
     uvicorn.run("separate:app", host="0.0.0.0", port=8100, log_level="info")

@@ -12,6 +12,7 @@ boosted_converted_output/
 final_output/
 stereo_output/
 upload/
+download/
 
 # Distribution / packaging
 .Python
