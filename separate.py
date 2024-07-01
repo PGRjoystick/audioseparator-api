@@ -234,7 +234,7 @@ async def sing_audio(file: UploadFile = File(..., description="The audio file to
     output_directory = "final_output"
 
     # Merge the boosted vocal file with the instrumental file
-    merged_file_name = file_name_prefix + "_merged.mp3"
+    merged_file_name = unique_filename + "_merged.mp3"
     merged_file_path = os.path.join(output_directory, merged_file_name)
     # Convert the vocal file to stereo
     stereo_vocal_file_path = 'stereo_' + mp3_vocal_file_path
