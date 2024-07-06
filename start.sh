@@ -1,5 +1,14 @@
 #!/bin/bash
 
+# Create directories if they do not exist
+mkdir -p final_output
+mkdir -p output
+mkdir -p download
+mkdir -p stereo_output
+mkdir -p converted_output
+mkdir -p boosted_converted_output
+mkdir -p upload
+
 # Create a virtual environment
 python3 -m venv venv
 
