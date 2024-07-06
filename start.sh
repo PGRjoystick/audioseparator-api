@@ -18,7 +18,8 @@ source venv/bin/activate
 # Install dependencies
 pip3 install torch torchvision torchaudio
 pip install onnxruntime
-pip install onnxruntime-gpu --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxrunti>pip install "audio-separator[gpu]"
+pip install onnxruntime-gpu --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/
+pip install "audio-separator[gpu]"
 pip install fastapi
 pip install python-dotenv
 
