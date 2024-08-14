@@ -1,12 +1,12 @@
 # AudioSeparator-API
 
-AudioSeparator-API is a simple yet powerful API designed to facilitate audio separation tasks, leveraging the UVR developed by Anjok07. This project aims to provide an accessible interface for users to perform audio separation with high efficiency and accuracy.
+AudioSeparator-API is a simple yet powerful HTTP API designed to facilitate audio separation tasks, leveraging the UVR developed by Anjok07. This project aims to provide an accessible interface for users to perform audio separation with high efficiency and accuracy.
 
 This project also has a singing AI voice generation feature that utilizes the Retrieval-based Voice Conversion (RVC) technology developed by the RVC-Project team. This feature allows users to generate a singing AI voice from a YouTube video or an audio file.
 
 by utilizing both the UVR and RVC technologies, AudioSeparator-API offers a comprehensive solution for audio separation and clean singing AI voice generation tasks.
 
-## API Endpoints
+## HTTP API Endpoints
 
 The API consists of several endpoints, each tailored to handle different aspects of audio separation. Below is an overview of the available endpoints:
 
