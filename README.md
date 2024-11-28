@@ -37,6 +37,7 @@ To install and set up AudioSeparator-API, ensure the following requirements are 
 - A CUDA-capable GPU with at least 6GB VRAM (Note: AMD GPUs are not supported at this time).
 - [Python 3.10](https://www.python.org/downloads/release/python-3100/) and `pip` installed
 - [NVIDIA CUDA Toolkit 11.8](https://developer.nvidia.com/cuda-11-8-0-download-archive) installed
+- [NVIDIA cuDNN](https://developer.nvidia.com/cudnn) installed
 - [FFmpeg](https://www.gyan.dev/ffmpeg/builds/) and [yt-dlp](https://github.com/yt-dlp/yt-dlp) Installed and added to `PATH`
 - Run the `start.bat` file to complete the setup.
 
