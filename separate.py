@@ -287,7 +287,7 @@ async def sing_audio(file: UploadFile = File(..., description="The audio file to
 
     # Boost the volume of the converted vocal file
     boosted_vocal_file_path = 'boosted_' + converted_vocal_file_path
-    subprocess.run(['ffmpeg', '-i', converted_vocal_file_path, '-filter:a', 'volume=7dB', boosted_vocal_file_path])
+    subprocess.run(['ffmpeg', '-i', converted_vocal_file_path, '-filter:a', 'volume=9dB', boosted_vocal_file_path])
 
     # Delete the converted vocal file
     os.remove(converted_vocal_file_path)
