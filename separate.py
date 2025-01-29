@@ -130,6 +130,53 @@ def merge_audio(instrumental_path: str, vocal_path: str, output_path: str):
     ]
     subprocess.run(command, check=True)
 
+def merge_multiple_audio(audio_paths: list = None, output_path: str = None, instrumental_path: str = None, vocal_path: str = None):
+    # Combine all audio paths
+    all_paths = []
+    if audio_paths:
+        # Prepend output/ to each path in audio_paths
+        all_paths.extend([os.path.join("output", path) for path in audio_paths])
+    if instrumental_path:
+        all_paths.append(instrumental_path)
+    if vocal_path:
+        all_paths.append(vocal_path)
+        
+    if not all_paths:
+        raise ValueError("No audio files provided")
+    if not output_path:
+        raise ValueError("Output path is required")
+    
+    # Build input arguments
+    input_args = []
+    for path in all_paths:
+        input_args.extend(['-i', path])
+    
+    # Build filter string
+    inputs_count = len(all_paths)
+    filter_inputs = ''.join(f'[{i}:a]' for i in range(inputs_count))
+    filter_complex = f'{filter_inputs}amix=inputs={inputs_count}:duration=first:dropout_transition=2,volume=10dB[out]'
+    
+    command = [
+        'ffmpeg',
+        *input_args,
+        '-filter_complex', filter_complex,
+        '-map', '[out]',
+        '-b:a', '128k',
+        '-f', 'opus',
+        output_path
+    ]
+    
+    try:
+        subprocess.run(command, check=True)
+        # Clean up audio_paths files after successful merge
+        if audio_paths:
+            for path in audio_paths:
+                full_path = os.path.join("output", path)
+                if os.path.exists(full_path):
+                    os.remove(full_path)
+    except subprocess.CalledProcessError as e:
+        raise e
+    
 def extract_youtube_video_id(url):
     # Regex pattern to match YouTube video IDs from various URL formats
     pattern = r'(?:youtube\.com\/(?:[^\/\n\s]+\/\S+\/|(?:v|e(?:mbed)?)\/|\S*?[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})'
@@ -192,11 +239,26 @@ async def sing_audio(file: UploadFile = File(..., description="The audio file to
 
     if multi_process_vocal:
         separator = Separator(output_dir="output", vr_params={"batch_size": 2, "window_size": 512, "aggression": 5})
-        models_stems = {'UVR-DeEcho-DeReverb.pth': 0, 'UVR-De-Echo-Normal.pth': 0, '5_HP-Karaoke-UVR.pth': 1}
-        for model, stem in models_stems.items():
+        
+        # Dictionary of model names with tuples containing (vocal_stem, reverb_stem)
+        models_stems = {
+            'UVR-DeEcho-DeReverb.pth': (0, 1),
+            'UVR-De-Echo-Normal.pth': (0, 1),
+            '5_HP-Karaoke-UVR.pth': (1, 0)
+        }
+        
+        # Store echo/reverb stems from each phase
+        echo_reverb_stems = []
+        
+        for model, (vocal_stem, reverb_stem) in models_stems.items():
             separator.load_model(model_filename=model)
             output_file_vocals = os.path.join("output", output_file_vocals)
-            output_file_vocals = separator.separate(output_file_vocals)[stem]
+            
+            # Separate and get both stems
+            separated_stems = separator.separate(output_file_vocals)
+            output_file_vocals = separated_stems[vocal_stem]
+            echo_reverb_stems.append(separated_stems[reverb_stem])
+        print('############## REVERB STEMS PATH ', echo_reverb_stems)
 
     print(output_file_vocals)
     # Convert the vocal output file to MP3
@@ -240,8 +302,12 @@ async def sing_audio(file: UploadFile = File(..., description="The audio file to
     stereo_vocal_file_path = 'stereo_' + mp3_vocal_file_path
     convert_mono_to_stereo(boosted_vocal_file_path, stereo_vocal_file_path)
 
-    # Merge the stereo vocal file with the instrumental file
-    merge_audio(instrumental_file_path, stereo_vocal_file_path, merged_file_path)
+    if multi_process_vocal:
+        # Merge the stereo vocal file and the reverb audio file with the instrumental file
+        merge_multiple_audio(audio_paths=echo_reverb_stems, instrumental_path=instrumental_file_path, vocal_path=stereo_vocal_file_path, output_path=merged_file_path)
+    else:
+        # Merge the stereo vocal file with the instrumental file
+        merge_audio(instrumental_file_path, stereo_vocal_file_path, merged_file_path)
 
     # Delete the original uploaded file
     os.remove(instrumental_file_path)
