@@ -395,11 +395,8 @@ async def download_youtube_h264(link: str, use_gpu: bool = True, max_height: int
         compress_level: Compression level (1-3, where 3 is smallest file size but lower quality)
     """
     try:
-        # Generate unique filenames for temporary and output files
-        video_id = extract_youtube_video_id(link)
-        if not video_id:
-            raise HTTPException(status_code=400, detail="Invalid YouTube URL")
-            
+        
+        video_id = link    
         # Create absolute paths for files
         current_dir = os.path.abspath(os.getcwd())
         temp_filename = os.path.join(current_dir, f"{video_id}_{uuid.uuid4()}.mp4")
