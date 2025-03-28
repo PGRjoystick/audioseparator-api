@@ -383,7 +383,184 @@ async def dl_youtube(link: str):
     file_like = open(filename, mode="rb")
     return StreamingResponse(file_like, media_type="video/mp4")
 
+@app.post("/download_youtube_h264")
+async def download_youtube_h264(link: str, use_gpu: bool = True):
+    """
+    Download a YouTube video and convert it to H.264 format optimized for web streaming
+    
+    Args:
+        link: YouTube video URL
+        use_gpu: Whether to use GPU acceleration for encoding (default: True)
+    """
+    try:
+        # Generate unique filenames for temporary and output files
+        video_id = extract_youtube_video_id(link)
+        if not video_id:
+            raise HTTPException(status_code=400, detail="Invalid YouTube URL")
+            
+        # Create absolute paths for files
+        current_dir = os.path.abspath(os.getcwd())
+        temp_filename = os.path.join(current_dir, f"{video_id}_{uuid.uuid4()}.mp4")
+        output_filename = os.path.join(current_dir, f"{video_id}_{uuid.uuid4()}.mp4")
+        
+        print(f"Current directory: {current_dir}")
+        print(f"Temp file path: {temp_filename}")
+        
+        # Download the YouTube video with best quality - explicitly specify output format
+        print(f"Downloading video from YouTube: {link}")
+        try:
+            # Use -o to force specific output location and name
+            result = subprocess.run(
+                ["yt-dlp", 
+                 "--no-playlist",
+                 "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best", 
+                 "-o", temp_filename, 
+                 "--force-overwrites",
+                 link],
+                capture_output=True, text=True, check=True
+            )
+            print(f"yt-dlp stdout: {result.stdout}")
+            print(f"Download completed successfully")
+        except subprocess.CalledProcessError as e:
+            print(f"ERROR in download: {e.stderr}")
+            raise HTTPException(status_code=500, detail=f"Error downloading video: {e.stderr}")
+        
+        # Check if the file exists and log its size
+        if os.path.exists(temp_filename):
+            file_size = os.path.getsize(temp_filename) / (1024 * 1024)  # Size in MB
+            print(f"Downloaded file size: {file_size:.2f} MB")
+        else:
+            # Look for any file that might have been created by yt-dlp
+            print("Looking for downloaded file in current directory...")
+            for file in os.listdir(current_dir):
+                if video_id in file and os.path.isfile(file):
+                    print(f"Found potential file: {file}")
+                    temp_filename = os.path.join(current_dir, file)
+                    break
+            else:
+                print("No matching files found")
+                raise HTTPException(status_code=500, detail="Downloaded file not found")
+        
+        # Convert the downloaded video to H.264 format
+        print(f"Converting video to H.264: {temp_filename} → {output_filename}")
+        try:
+            convert_to_h264(temp_filename, output_filename, use_gpu=use_gpu)
+            print(f"Conversion successful, output size: {os.path.getsize(output_filename) / (1024 * 1024):.2f} MB")
+        except Exception as e:
+            print(f"ERROR during conversion: {str(e)}")
+            # If GPU conversion failed, try CPU fallback
+            if use_gpu:
+                print("Attempting CPU fallback...")
+                try:
+                    convert_to_h264(temp_filename, output_filename, use_gpu=False)
+                    print(f"CPU fallback conversion successful")
+                except Exception as e2:
+                    print(f"CPU fallback also failed: {str(e2)}")
+                    raise HTTPException(status_code=500, detail=f"Video conversion failed: {str(e)} (CPU fallback also failed)")
+            else:
+                raise HTTPException(status_code=500, detail=f"Video conversion failed: {str(e)}")
+        
+        # Delete the temporary file
+        try:
+            os.remove(temp_filename)
+            print(f"Temporary file removed: {temp_filename}")
+        except Exception as e:
+            print(f"Warning: Failed to delete temporary file: {str(e)}")
+        
+        # Return the converted video as a streaming response
+        print(f"Serving file: {output_filename}")
+        return StreamingResponse(
+            file_streamer(output_filename), 
+            media_type="video/mp4",
+            headers={"Content-Disposition": f"attachment; filename=\"{video_id}.mp4\""}
+        )
+        
+    except Exception as e:
+        print(f"CRITICAL ERROR in download_youtube_h264: {str(e)}")
+        # Print the full traceback for better debugging
+        import traceback
+        print(traceback.format_exc())
+        
+        # Clean up any temporary files that might have been created
+        try:
+            if 'temp_filename' in locals() and os.path.exists(temp_filename):
+                os.remove(temp_filename)
+                print(f"Cleaned up temp file: {temp_filename}")
+            if 'output_filename' in locals() and os.path.exists(output_filename):
+                os.remove(output_filename)
+                print(f"Cleaned up output file: {output_filename}")
+        except Exception as cleanup_error:
+            print(f"Error during cleanup: {str(cleanup_error)}")
+            
+        raise HTTPException(status_code=500, detail=str(e))
 
+def convert_to_h264(input_path: str, output_path: str, use_gpu: bool = True):
+    """
+    Convert video to H.264 format using FFmpeg with settings optimized for web streaming
+    
+    Args:
+        input_path: Path to input video file
+        output_path: Path for output file
+        use_gpu: Whether to attempt NVIDIA GPU acceleration
+    """
+    # Base command components
+    base_command = ['ffmpeg', '-i', input_path]
+    
+    if use_gpu:
+        try:
+            # Check if NVENC is available
+            print("Checking for NVIDIA encoder availability...")
+            nvidia_check = subprocess.run(
+                ['ffmpeg', '-hide_banner', '-encoders'], 
+                capture_output=True, text=True
+            )
+            
+            if 'h264_nvenc' in nvidia_check.stdout:
+                # Use NVIDIA hardware acceleration
+                output_options = [
+                    '-c:v', 'h264_nvenc',     # Use NVIDIA GPU encoder
+                    '-preset', 'p4',          # Encoding preset (p1-p7, higher = better quality)
+                    '-tune', 'hq',            # Optimize for visual quality
+                    '-rc:v', 'vbr',           # Variable bitrate mode
+                    '-cq:v', '23',            # Constrained quality level (lower = better)
+                    '-b:v', '0',              # Let quality control determine bitrate
+                    '-c:a', 'aac',            # AAC audio codec
+                    '-b:a', '128k',           # Audio bitrate
+                    '-movflags', '+faststart' # Web streaming optimization
+                ]
+                print("Using NVIDIA GPU acceleration for video encoding")
+            else:
+                # Fall back to CPU encoding
+                print("NVENC not found in FFmpeg encoders")
+                raise Exception("NVENC not available")
+        except Exception as e:
+            print(f"GPU encoding not available, falling back to CPU: {str(e)}")
+            output_options = get_cpu_encoding_options()
+    else:
+        # Use CPU encoding
+        print("Using CPU encoding as requested")
+        output_options = get_cpu_encoding_options()
+    
+    # Run FFmpeg command
+    print(f"Running FFmpeg with command: {' '.join(base_command + output_options + [output_path])}")
+    result = subprocess.run(base_command + output_options + [output_path], capture_output=True, text=True)
+    
+    if result.returncode != 0:
+        print(f"FFmpeg error output: {result.stderr}")
+        raise Exception(f"FFmpeg error (code {result.returncode}): {result.stderr}")
+    else:
+        print("FFmpeg conversion completed successfully")
+
+def get_cpu_encoding_options():
+    """Get the standard CPU encoding options for H.264"""
+    return [
+        '-c:v', 'libx264',        # H.264 video codec (CPU-based)
+        '-crf', '23',             # Quality (lower = better)
+        '-preset', 'medium',      # Encoding speed/quality balance
+        '-c:a', 'aac',            # AAC audio codec
+        '-b:a', '128k',           # Audio bitrate
+        '-movflags', '+faststart' # Optimize for web streaming
+    ]
 
 @app.post("/sing_youtube")
 async def sing_youtube( link: str,                   
