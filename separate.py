@@ -384,13 +384,15 @@ async def dl_youtube(link: str):
     return StreamingResponse(file_like, media_type="video/mp4")
 
 @app.post("/download_youtube_h264")
-async def download_youtube_h264(link: str, use_gpu: bool = True):
+async def download_youtube_h264(link: str, use_gpu: bool = True, max_height: int = 720, compress_level: int = 2):
     """
     Download a YouTube video and convert it to H.264 format optimized for web streaming
     
     Args:
         link: YouTube video URL
         use_gpu: Whether to use GPU acceleration for encoding (default: True)
+        max_height: Maximum video height to limit file size (default: 720p)
+        compress_level: Compression level (1-3, where 3 is smallest file size but lower quality)
     """
     try:
         # Generate unique filenames for temporary and output files
@@ -406,20 +408,21 @@ async def download_youtube_h264(link: str, use_gpu: bool = True):
         print(f"Current directory: {current_dir}")
         print(f"Temp file path: {temp_filename}")
         
-        # Download the YouTube video with best quality - explicitly specify output format
-        print(f"Downloading video from YouTube: {link}")
+        # Download the YouTube video with resolution limited to max_height
+        print(f"Downloading video from YouTube: {link} (max {max_height}p)")
         try:
-            # Use -o to force specific output location and name
+            # Build format string to limit resolution
+            format_string = f"bestvideo[height<={max_height}][ext=mp4]+bestaudio[ext=m4a]/best[height<={max_height}]"
+            
             result = subprocess.run(
                 ["yt-dlp", 
                  "--no-playlist",
-                 "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best", 
+                 "-f", format_string, 
                  "-o", temp_filename, 
                  "--force-overwrites",
                  link],
                 capture_output=True, text=True, check=True
             )
-            print(f"yt-dlp stdout: {result.stdout}")
             print(f"Download completed successfully")
         except subprocess.CalledProcessError as e:
             print(f"ERROR in download: {e.stderr}")
@@ -441,18 +444,19 @@ async def download_youtube_h264(link: str, use_gpu: bool = True):
                 print("No matching files found")
                 raise HTTPException(status_code=500, detail="Downloaded file not found")
         
-        # Convert the downloaded video to H.264 format
-        print(f"Converting video to H.264: {temp_filename} → {output_filename}")
+        # Convert the downloaded video to H.264 format with compression
+        print(f"Converting video to H.264 with compression level {compress_level}: {temp_filename} → {output_filename}")
         try:
-            convert_to_h264(temp_filename, output_filename, use_gpu=use_gpu)
-            print(f"Conversion successful, output size: {os.path.getsize(output_filename) / (1024 * 1024):.2f} MB")
+            convert_to_h264(temp_filename, output_filename, use_gpu=use_gpu, compress_level=compress_level)
+            output_size = os.path.getsize(output_filename) / (1024 * 1024)
+            print(f"Conversion successful, output size: {output_size:.2f} MB")
         except Exception as e:
             print(f"ERROR during conversion: {str(e)}")
             # If GPU conversion failed, try CPU fallback
             if use_gpu:
                 print("Attempting CPU fallback...")
                 try:
-                    convert_to_h264(temp_filename, output_filename, use_gpu=False)
+                    convert_to_h264(temp_filename, output_filename, use_gpu=False, compress_level=compress_level)
                     print(f"CPU fallback conversion successful")
                 except Exception as e2:
                     print(f"CPU fallback also failed: {str(e2)}")
@@ -467,17 +471,16 @@ async def download_youtube_h264(link: str, use_gpu: bool = True):
         except Exception as e:
             print(f"Warning: Failed to delete temporary file: {str(e)}")
         
-        # Return the converted video as a streaming response
+        # Return the converted video as a FileResponse instead of StreamingResponse for better reliability
         print(f"Serving file: {output_filename}")
-        return StreamingResponse(
-            file_streamer(output_filename), 
+        return FileResponse(
+            path=output_filename,
             media_type="video/mp4",
-            headers={"Content-Disposition": f"attachment; filename=\"{video_id}.mp4\""}
+            filename=f"{video_id}.mp4"
         )
         
     except Exception as e:
         print(f"CRITICAL ERROR in download_youtube_h264: {str(e)}")
-        # Print the full traceback for better debugging
         import traceback
         print(traceback.format_exc())
         
@@ -494,17 +497,62 @@ async def download_youtube_h264(link: str, use_gpu: bool = True):
             
         raise HTTPException(status_code=500, detail=str(e))
 
-def convert_to_h264(input_path: str, output_path: str, use_gpu: bool = True):
+def convert_to_h264(input_path: str, output_path: str, use_gpu: bool = True, compress_level: int = 2):
     """
-    Convert video to H.264 format using FFmpeg with settings optimized for web streaming
+    Convert video to H.264 format using FFmpeg with settings optimized for web streaming and smaller file size
     
     Args:
         input_path: Path to input video file
         output_path: Path for output file
         use_gpu: Whether to attempt NVIDIA GPU acceleration
+        compress_level: Compression level (1-3, where 3 is smallest file size but lower quality)
     """
+    # Check input file exists
+    if not os.path.exists(input_path):
+        raise FileNotFoundError(f"Input file not found: {input_path}")
+    
+    # Define compression settings based on level
+    if compress_level == 1:
+        # Light compression
+        maxrate = '5M'
+        crf_value = '26'     # Lower CRF = higher quality
+        preset = 'fast' if not use_gpu else 'p4'
+    elif compress_level == 2:
+        # Medium compression (default)
+        maxrate = '3M'
+        crf_value = '30'
+        preset = 'fast' if not use_gpu else 'p4'
+    else:
+        # Heavy compression
+        maxrate = '2M'
+        crf_value = '32'
+        preset = 'veryfast' if not use_gpu else 'p5'
+    
+    # Get video height to determine if scaling is needed
+    probe_cmd = ['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 
+                 'stream=height', '-of', 'csv=s=x:p=0', input_path]
+    try:
+        height = int(subprocess.check_output(probe_cmd).decode().strip())
+        print(f"Original video height: {height}px")
+        
+        # Only scale if height > max_height
+        if height > 720:
+            # Use simpler scaling filter that works across FFmpeg versions
+            scale_filter = 'scale=-2:720'
+            print(f"Scaling video to 720p")
+        else:
+            # No scaling needed
+            scale_filter = None
+            print(f"No scaling needed, keeping original resolution")
+    except Exception as e:
+        print(f"Could not determine video height: {str(e)}")
+        scale_filter = 'scale=-2:720'  # Default to 720p to be safe
+    
     # Base command components
-    base_command = ['ffmpeg', '-i', input_path]
+    if scale_filter:
+        base_command = ['ffmpeg', '-i', input_path, '-vf', scale_filter]
+    else:
+        base_command = ['ffmpeg', '-i', input_path]
     
     if use_gpu:
         try:
@@ -516,33 +564,31 @@ def convert_to_h264(input_path: str, output_path: str, use_gpu: bool = True):
             )
             
             if 'h264_nvenc' in nvidia_check.stdout:
-                # Use NVIDIA hardware acceleration
+                # Use NVIDIA hardware acceleration with optimized settings
                 output_options = [
-                    '-c:v', 'h264_nvenc',     # Use NVIDIA GPU encoder
-                    '-preset', 'p4',          # Encoding preset (p1-p7, higher = better quality)
-                    '-tune', 'hq',            # Optimize for visual quality
-                    '-rc:v', 'vbr',           # Variable bitrate mode
-                    '-cq:v', '23',            # Constrained quality level (lower = better)
-                    '-b:v', '0',              # Let quality control determine bitrate
-                    '-c:a', 'aac',            # AAC audio codec
-                    '-b:a', '128k',           # Audio bitrate
-                    '-movflags', '+faststart' # Web streaming optimization
+                    '-c:v', 'h264_nvenc',        # Use NVIDIA GPU encoder
+                    '-preset', preset,           # Encoding preset
+                    '-tune', 'hq',               # Optimize for visual quality
+                    '-rc:v', 'vbr',              # Variable bitrate mode
+                    '-cq:v', crf_value,          # Quality control
+                    '-maxrate', maxrate,         # Limit maximum bitrate
+                    '-bufsize', '8M',            # Encoding buffer size
+                    '-c:a', 'aac',               # AAC audio codec
+                    '-b:a', '96k',               # Reduced audio bitrate
+                    '-movflags', '+faststart'    # Web streaming optimization
                 ]
                 print("Using NVIDIA GPU acceleration for video encoding")
             else:
-                # Fall back to CPU encoding
-                print("NVENC not found in FFmpeg encoders")
                 raise Exception("NVENC not available")
         except Exception as e:
             print(f"GPU encoding not available, falling back to CPU: {str(e)}")
-            output_options = get_cpu_encoding_options()
+            output_options = get_cpu_encoding_options(crf_value, maxrate, preset)
     else:
-        # Use CPU encoding
         print("Using CPU encoding as requested")
-        output_options = get_cpu_encoding_options()
+        output_options = get_cpu_encoding_options(crf_value, maxrate, preset)
     
-    # Run FFmpeg command
-    print(f"Running FFmpeg with command: {' '.join(base_command + output_options + [output_path])}")
+    # Run FFmpeg command with progress monitoring
+    print(f"Running FFmpeg conversion with compression level {compress_level}...")
     result = subprocess.run(base_command + output_options + [output_path], capture_output=True, text=True)
     
     if result.returncode != 0:
@@ -550,15 +596,18 @@ def convert_to_h264(input_path: str, output_path: str, use_gpu: bool = True):
         raise Exception(f"FFmpeg error (code {result.returncode}): {result.stderr}")
     else:
         print("FFmpeg conversion completed successfully")
-
-def get_cpu_encoding_options():
-    """Get the standard CPU encoding options for H.264"""
+        return True
+    
+def get_cpu_encoding_options(crf_value='30', maxrate='3M', preset='fast'):
+    """Get optimized CPU encoding options for H.264 with better size/speed balance"""
     return [
         '-c:v', 'libx264',        # H.264 video codec (CPU-based)
-        '-crf', '23',             # Quality (lower = better)
-        '-preset', 'medium',      # Encoding speed/quality balance
+        '-crf', crf_value,        # Quality (higher = smaller files)
+        '-preset', preset,        # Encoding preset
+        '-maxrate', maxrate,      # Limit maximum bitrate
+        '-bufsize', '8M',         # Encoding buffer size
         '-c:a', 'aac',            # AAC audio codec
-        '-b:a', '128k',           # Audio bitrate
+        '-b:a', '96k',            # Audio bitrate (reduced)
         '-movflags', '+faststart' # Optimize for web streaming
     ]
 
