@@ -296,7 +296,7 @@ async def sing_audio(file: UploadFile = File(..., description="The audio file to
     output_directory = "final_output"
 
     # Merge the boosted vocal file with the instrumental file
-    merged_file_name = unique_filename + "_merged.mp3"
+    merged_file_name = unique_filename + "_merged.m4a"
     merged_file_path = os.path.join(output_directory, merged_file_name)
     # Convert the vocal file to stereo
     stereo_vocal_file_path = 'stereo_' + mp3_vocal_file_path
@@ -319,7 +319,7 @@ async def sing_audio(file: UploadFile = File(..., description="The audio file to
     # Recreate the output directory to ensure it exists for future operations
     os.makedirs(output_directory, exist_ok=True)
 
-    return StreamingResponse(open(merged_file_path, "rb"), media_type="audio/mpeg")
+    return StreamingResponse(open(merged_file_path, "rb"), media_type="audio/mp4")
 
 @app.post("/download_youtube_audio")
 async def download_youtube(link: str):
