@@ -126,7 +126,7 @@ def merge_audio(instrumental_path: str, vocal_path: str, output_path: str):
     command = [
         'ffmpeg', '-i', instrumental_path, '-i', vocal_path, '-filter_complex',
         '[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=2,volume=4dB[out]',
-        '-map', '[out]', '-b:a', '128k', '-f', 'opus', output_path
+        '-map', '[out]', '-c:a', 'aac', '-b:a', '128k', output_path
     ]
     subprocess.run(command, check=True)
 
@@ -161,8 +161,8 @@ def merge_multiple_audio(audio_paths: list = None, output_path: str = None, inst
         *input_args,
         '-filter_complex', filter_complex,
         '-map', '[out]',
+        '-c:a', 'aac',
         '-b:a', '128k',
-        '-f', 'opus',
         output_path
     ]
     
