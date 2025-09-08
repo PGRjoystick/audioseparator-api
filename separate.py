@@ -18,6 +18,7 @@ import requests
 import re
 from fastapi.responses import FileResponse
 import shutil
+import zipfile
 
 app = FastAPI()
 load_dotenv()
@@ -118,6 +119,144 @@ async def separate_vocals(file: UploadFile = File(...)):
 
     return StreamingResponse(open(mp3_file_path, "rb"), media_type="audio/mpeg")
 
+@app.post("/separate")
+async def separate_6_stems(file: UploadFile = File(..., description="The audio file to separate into 6 stems.")):
+    """
+    Separate audio into 6 stems using htdemucs_6s model:
+    - Vocals
+    - Drums  
+    - Bass
+    - Guitar
+    - Piano
+    - Other
+    
+    Returns a ZIP file containing all 6 stems as FLAC files (lossless quality).
+    """
+    # Save the uploaded file to disk
+    filename = Path(file.filename).name
+    unique_filename = str(uuid.uuid4()) + "_" + filename
+    with open(unique_filename, "wb") as f:
+        f.write(await file.read())
+
+    try:
+        # Initialize the Separator class
+        separator = Separator(output_dir="output")
+        
+        # Load the htdemucs_6s model for 6-stem separation
+        separator.load_model(model_filename='htdemucs_6s.yaml')
+        
+        # Perform the separation on the uploaded file
+        output_files = separator.separate(unique_filename)
+        print(f"6-stem separation complete! Output file(s): {' '.join(output_files)}")
+        
+        # Expected stem names from htdemucs_6s model
+        stem_names = ['vocals', 'drums', 'bass', 'guitar', 'piano', 'other']
+        stem_files = {}
+        
+        # Find all stem files
+        for stem in stem_names:
+            stem_file = next((f for f in output_files if f"_({stem.title()})_" in f), None)
+            if stem_file:
+                stem_files[stem] = stem_file
+                print(f"Found {stem} stem: {stem_file}")
+        
+        if not stem_files:
+            raise Exception("No stem files found after separation")
+        
+        # Convert all stems to FLAC and prepare for ZIP
+        flac_files = []
+        for stem, stem_file in stem_files.items():
+            file_path = os.path.join("output", stem_file)
+            if os.path.exists(file_path):
+                # Convert to FLAC with stem name (lossless compression)
+                flac_file_path = f"{stem}.flac"
+                subprocess.run(['ffmpeg', '-i', file_path, '-c:a', 'flac', '-compression_level', '8', flac_file_path], check=True)
+                flac_files.append((flac_file_path, stem))
+                os.remove(file_path)  # Clean up original file
+        
+        # Ensure final_output directory exists
+        final_output_dir = "final_output"
+        os.makedirs(final_output_dir, exist_ok=True)
+        
+        # Create ZIP file containing all stems in final_output directory
+        zip_filename = f"stems_{unique_filename.split('_')[0]}.zip"
+        zip_filepath = os.path.join(final_output_dir, zip_filename)
+        
+        with zipfile.ZipFile(zip_filepath, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            for flac_file, stem_name in flac_files:
+                if os.path.exists(flac_file):
+                    zip_file.write(flac_file, f"{stem_name}.flac")
+                    os.remove(flac_file)  # Clean up individual FLAC files
+        
+        print(f"ZIP file created: {zip_filepath}")
+        
+        # Return the ZIP file
+        return StreamingResponse(
+            open(zip_filepath, "rb"), 
+            media_type="application/zip",
+            headers={"Content-Disposition": f"attachment; filename={zip_filename}"}
+        )
+        
+    except Exception as e:
+        print(f"Error during 6-stem separation: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Separation failed: {str(e)}")
+    
+    finally:
+        # Clean up the uploaded file
+        if os.path.exists(unique_filename):
+            os.remove(unique_filename)
+        
+        # Clean up output directory
+        if os.path.exists("output"):
+            shutil.rmtree("output")
+            os.makedirs("output", exist_ok=True)
+
+@app.post("/separate_youtube_audio")
+async def separate_youtube_audio_6_stems(link: str):
+    """
+    Download audio from a YouTube video and separate it into 6 stems using htdemucs_6s model:
+    - Vocals
+    - Drums
+    - Bass
+    - Guitar
+    - Piano
+    - Other
+    
+    Returns a ZIP file containing all 6 stems as FLAC files (lossless quality).
+    """
+    try:
+        # Download the YouTube audio
+        print(f"Downloading audio from YouTube: {link}")
+        filename = download_youtube_audio(link)
+        
+        if not os.path.exists(filename):
+            raise HTTPException(status_code=500, detail="Failed to download YouTube audio")
+        
+        print(f"Downloaded audio file: {filename}")
+        
+        # Get the filename without the path for the UploadFile object
+        audio_filename = os.path.basename(str(filename))
+        
+        # Call the separate_6_stems function with the downloaded file
+        with open(filename, 'rb') as f:
+            # Create an UploadFile object from the downloaded file with proper filename
+            upload_file = UploadFile(filename=audio_filename, file=f)
+            result = await separate_6_stems(upload_file)
+        
+        # Clean up the downloaded file
+        if os.path.exists(filename):
+            os.remove(filename)
+            print(f"Cleaned up downloaded file: {filename}")
+        
+        return result
+        
+    except Exception as e:
+        print(f"Error during YouTube audio separation: {str(e)}")
+        # Clean up any downloaded files
+        if 'filename' in locals() and os.path.exists(filename):
+            os.remove(filename)
+        raise HTTPException(status_code=500, detail=f"YouTube audio separation failed: {str(e)}")
+
 def convert_mono_to_stereo(input_path: str, output_path: str):
     command = ['ffmpeg', '-i', input_path, '-ac', '2', output_path]
     subprocess.run(command, check=True)
@@ -200,14 +339,17 @@ async def sing_audio(file: UploadFile = File(..., description="The audio file to
                     rms_mix_rate: float = Form(0.6, description="Adjust the volume envelope scaling. Closer to 0, the more it mimicks the volume of the original vocals. Can help mask noise and make volume sound more natural when set relatively low. Closer to 1 will be more of a consistently loud volume."),
                     protect: float = Form(0.3, description="Protect voiceless consonants and breath sounds to prevent artifacts such as tearing in electronic music. Set to 0.5 to disable. Decrease the value to increase protection, but it may reduce indexing accuracy."),
                     multi_process_vocal: bool = Form(False, description="When multi process vocal is set to true, the UVR server will process the vocal stem further using additional model with 'UVR-MDX-NET_Crowd_HQ_1.onnx' and 'Reverb_HQ_By_FoxJoy.onnx'. This will increase the processing time. but this will clean additional reverb and crowd noise from the vocal stem. potentially making the vocal stem sound cleaner with music that has more reverb and crowd noise."),
+                    no_reverb: bool = Form(False, description="When set to true, reverb and echo tracks will not be mixed into the final output, resulting in a cleaner vocal without reverb effects."),
                     link: Optional[str] = Form(None, description="Link to the YouTube video to process.")):
     
     if link:
         video_id = extract_youtube_video_id(link)
         # Determine the inferMode based on multi_process_vocal value
         inferMode = "full" if multi_process_vocal else "fast"
+        # Determine the no_reverb mode string
+        no_reverb_mode = "no-reverb" if no_reverb else "with-reverb"
         # Construct the file name prefix to check
-        file_name_prefix = f"{video_id}_{model_name}_{f0up_key}_{inferMode}"
+        file_name_prefix = f"{video_id}_{model_name}_{f0up_key}_{inferMode}_{no_reverb_mode}"
         # Save the uploaded file to disk
         filename = Path(file.filename).name
         unique_filename = str(file_name_prefix)
@@ -250,15 +392,31 @@ async def sing_audio(file: UploadFile = File(..., description="The audio file to
         # Store echo/reverb stems from each phase
         echo_reverb_stems = []
         
-        for model, (vocal_stem, reverb_stem) in models_stems.items():
+        # Use a dedicated variable for the current vocal file being processed
+        current_vocal_file = output_file_vocals
+        
+        for phase, (model, (vocal_stem_idx, reverb_stem_idx)) in enumerate(models_stems.items(), 1):
+            print(f"############## Phase {phase}: Processing with {model}")
             separator.load_model(model_filename=model)
-            output_file_vocals = os.path.join("output", output_file_vocals)
+            
+            # Ensure we have the full path for separation
+            current_vocal_path = os.path.join("output", current_vocal_file)
             
             # Separate and get both stems
-            separated_stems = separator.separate(output_file_vocals)
-            output_file_vocals = separated_stems[vocal_stem]
-            echo_reverb_stems.append(separated_stems[reverb_stem])
-        print('############## REVERB STEMS PATH ', echo_reverb_stems)
+            separated_stems = separator.separate(current_vocal_path)
+            
+            # Update the vocal file for next iteration
+            current_vocal_file = separated_stems[vocal_stem_idx]
+            
+            # Store the reverb/echo stem
+            echo_reverb_stems.append(separated_stems[reverb_stem_idx])
+            
+            print(f"Phase {phase} complete - Vocal: {current_vocal_file}, Reverb: {separated_stems[reverb_stem_idx]}")
+        
+        # Update the main vocal file variable with the final cleaned result
+        output_file_vocals = current_vocal_file
+        print('############## FINAL VOCAL AFTER CLEANING:', output_file_vocals)
+        print('############## REVERB STEMS COLLECTED:', echo_reverb_stems)
 
     print(output_file_vocals)
     # Convert the vocal output file to MP3
@@ -304,7 +462,17 @@ async def sing_audio(file: UploadFile = File(..., description="The audio file to
 
     if multi_process_vocal:
         # Merge the stereo vocal file and the reverb audio file with the instrumental file
-        merge_multiple_audio(audio_paths=echo_reverb_stems, instrumental_path=instrumental_file_path, vocal_path=stereo_vocal_file_path, output_path=merged_file_path)
+        if no_reverb:
+            # Don't merge reverb - just merge vocal and instrumental
+            merge_audio(instrumental_file_path, stereo_vocal_file_path, merged_file_path)
+            # Clean up reverb stems since we're not using them
+            for reverb_stem in echo_reverb_stems:
+                reverb_path = os.path.join("output", reverb_stem)
+                if os.path.exists(reverb_path):
+                    os.remove(reverb_path)
+        else:
+            # Merge with reverb as before
+            merge_multiple_audio(audio_paths=echo_reverb_stems, instrumental_path=instrumental_file_path, vocal_path=stereo_vocal_file_path, output_path=merged_file_path)
     else:
         # Merge the stereo vocal file with the instrumental file
         merge_audio(instrumental_file_path, stereo_vocal_file_path, merged_file_path)
@@ -607,7 +775,7 @@ def get_cpu_encoding_options(crf_value='30', maxrate='3M', preset='fast'):
         '-b:a', '96k',            # Audio bitrate (reduced)
         '-movflags', '+faststart' # Optimize for web streaming
     ]
-
+  
 @app.post("/sing_youtube")
 async def sing_youtube( link: str,                   
                         model_name: str = Form("AyanaAoba.pth", description="Name of the voice model to use."),
@@ -621,7 +789,8 @@ async def sing_youtube( link: str,
                         resample_sr: int = Form(0, description="Resample the output audio in post-processing to the final sample rate. Set to 0 for no resampling"),
                         rms_mix_rate: float = Form(0.6, description="Adjust the volume envelope scaling. Closer to 0, the more it mimicks the volume of the original vocals. Can help mask noise and make volume sound more natural when set relatively low. Closer to 1 will be more of a consistently loud volume."),
                         protect: float = Form(0.3, description="Protect voiceless consonants and breath sounds to prevent artifacts such as tearing in electronic music. Set to 0.5 to disable. Decrease the value to increase protection, but it may reduce indexing accuracy."),
-                        multi_process_vocal: bool = Form(False, description="When multi process vocal is set to true, the UVR server will process the vocal stem further using additional model with 'UVR-MDX-NET_Crowd_HQ_1.onnx' and 'Reverb_HQ_By_FoxJoy.onnx'. This will increase the processing time. but this will clean additional reverb and crowd noise from the vocal stem. potentially making the vocal stem sound cleaner with music that has more reverb and crowd noise.")):
+                        multi_process_vocal: bool = Form(False, description="When multi process vocal is set to true, the UVR server will process the vocal stem further using additional model with 'UVR-MDX-NET_Crowd_HQ_1.onnx' and 'Reverb_HQ_By_FoxJoy.onnx'. This will increase the processing time. but this will clean additional reverb and crowd noise from the vocal stem. potentially making the vocal stem sound cleaner with music that has more reverb and crowd noise."),
+                        no_reverb: bool = Form(False, description="When set to true, reverb and echo tracks will not be mixed into the final output, resulting in a cleaner vocal without reverb effects.")):
     
     # Check if the link is available
     video_id = extract_youtube_video_id(link)
@@ -629,8 +798,11 @@ async def sing_youtube( link: str,
     # Determine the inferMode based on multi_process_vocal value
     inferMode = "full" if multi_process_vocal else "fast"
 
+    # Determine the no_reverb mode string
+    no_reverb_mode = "no-reverb" if no_reverb else "with-reverb"
+
     # Construct the file name prefix to check
-    file_name_prefix = f"{video_id}_{model_name}_{f0up_key}_{inferMode}"
+    file_name_prefix = f"{video_id}_{model_name}_{f0up_key}_{inferMode}_{no_reverb_mode}"
 
     # Check if the video id is available on disk in the 'final_output' directory
     final_output_dir = Path('final_output')
@@ -651,7 +823,9 @@ async def sing_youtube( link: str,
     # Call the sing_audio function with the downloaded file
     with open(filename, 'rb') as f:
         upload_file = UploadFile(filename=filename, file=f)
-        return await sing_audio(upload_file, model_name, index_path, f0up_key, f0method, index_rate, device, is_half, filter_radius, resample_sr, rms_mix_rate, protect, multi_process_vocal, link=link)
+        return await sing_audio(upload_file, model_name, index_path, f0up_key, f0method, index_rate, device, is_half, filter_radius, resample_sr, rms_mix_rate, protect, multi_process_vocal, no_reverb, link=link)
 
 if __name__ == "__main__":
     uvicorn.run("separate:app", host="0.0.0.0", port=8100, log_level="info")
+
+    
