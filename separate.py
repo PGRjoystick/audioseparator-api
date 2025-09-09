@@ -130,7 +130,7 @@ async def separate_6_stems(file: UploadFile = File(..., description="The audio f
     - Piano
     - Other
     
-    Returns a ZIP file containing all 6 stems as FLAC files (lossless quality).
+    Returns a ZIP file containing all 6 stems as OGG files (high quality).
     """
     # Save the uploaded file to disk
     filename = Path(file.filename).name
@@ -163,15 +163,15 @@ async def separate_6_stems(file: UploadFile = File(..., description="The audio f
         if not stem_files:
             raise Exception("No stem files found after separation")
         
-        # Convert all stems to FLAC and prepare for ZIP
-        flac_files = []
+        # Convert all stems to OGG and prepare for ZIP
+        ogg_files = []
         for stem, stem_file in stem_files.items():
             file_path = os.path.join("output", stem_file)
             if os.path.exists(file_path):
-                # Convert to FLAC with stem name (lossless compression)
-                flac_file_path = f"{stem}.flac"
-                subprocess.run(['ffmpeg', '-i', file_path, '-c:a', 'flac', '-compression_level', '8', flac_file_path], check=True)
-                flac_files.append((flac_file_path, stem))
+                # Convert to OGG with stem name (high quality compression)
+                ogg_file_path = f"{stem}.ogg"
+                subprocess.run(['ffmpeg', '-i', file_path, '-c:a', 'libvorbis', '-q:a', '6', ogg_file_path], check=True)
+                ogg_files.append((ogg_file_path, stem))
                 os.remove(file_path)  # Clean up original file
         
         # Ensure final_output directory exists
@@ -183,10 +183,10 @@ async def separate_6_stems(file: UploadFile = File(..., description="The audio f
         zip_filepath = os.path.join(final_output_dir, zip_filename)
         
         with zipfile.ZipFile(zip_filepath, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-            for flac_file, stem_name in flac_files:
-                if os.path.exists(flac_file):
-                    zip_file.write(flac_file, f"{stem_name}.flac")
-                    os.remove(flac_file)  # Clean up individual FLAC files
+            for ogg_file, stem_name in ogg_files:
+                if os.path.exists(ogg_file):
+                    zip_file.write(ogg_file, f"{stem_name}.ogg")
+                    os.remove(ogg_file)  # Clean up individual OGG files
         
         print(f"ZIP file created: {zip_filepath}")
         
@@ -222,7 +222,7 @@ async def separate_youtube_audio_6_stems(link: str):
     - Piano
     - Other
     
-    Returns a ZIP file containing all 6 stems as FLAC files (lossless quality).
+    Returns a ZIP file containing all 6 stems as OGG files (high quality).
     """
     try:
         # Download the YouTube audio
