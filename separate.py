@@ -211,6 +211,194 @@ async def separate_6_stems(file: UploadFile = File(..., description="The audio f
             shutil.rmtree("output")
             os.makedirs("output", exist_ok=True)
 
+@app.post("/remove_stems")
+async def remove_stems(file: UploadFile = File(..., description="The audio file to process."),
+                      vocals: bool = Form(False, description="Remove vocals from the audio"),
+                      drums: bool = Form(False, description="Remove drums from the audio"),
+                      bass: bool = Form(False, description="Remove bass from the audio"),
+                      guitar: bool = Form(False, description="Remove guitar from the audio"),
+                      piano: bool = Form(False, description="Remove piano from the audio"),
+                      other: bool = Form(False, description="Remove other instruments from the audio")):
+    """
+    Remove selected stems from audio by separating into 6 stems and merging back without the selected ones.
+    
+    Uses htdemucs_6s model to separate into:
+    - Vocals
+    - Drums  
+    - Bass
+    - Guitar
+    - Piano
+    - Other
+    
+    Returns OGG audio file with the selected stems removed.
+    """
+    # Save the uploaded file to disk
+    filename = Path(file.filename).name
+    unique_filename = str(uuid.uuid4()) + "_" + filename
+    with open(unique_filename, "wb") as f:
+        f.write(await file.read())
+
+    try:
+        # Initialize the Separator class
+        separator = Separator(output_dir="output")
+        
+        # Load the htdemucs_6s model for 6-stem separation
+        separator.load_model(model_filename='htdemucs_6s.yaml')
+        
+        # Perform the separation on the uploaded file
+        output_files = separator.separate(unique_filename)
+        print(f"6-stem separation complete! Output file(s): {' '.join(output_files)}")
+        
+        # Expected stem names from htdemucs_6s model
+        stem_names = ['vocals', 'drums', 'bass', 'guitar', 'piano', 'other']
+        stem_files = {}
+        
+        # Find all stem files
+        for stem in stem_names:
+            stem_file = next((f for f in output_files if f"_({stem.title()})_" in f), None)
+            if stem_file:
+                stem_files[stem] = stem_file
+                print(f"Found {stem} stem: {stem_file}")
+        
+        if not stem_files:
+            raise Exception("No stem files found after separation")
+        
+        # Create mapping of parameters to stem removal
+        stems_to_remove = {
+            'vocals': vocals,
+            'drums': drums,
+            'bass': bass,
+            'guitar': guitar,
+            'piano': piano,
+            'other': other
+        }
+        
+        # Filter out stems that should be removed
+        stems_to_keep = []
+        for stem, stem_file in stem_files.items():
+            if not stems_to_remove.get(stem, False):  # Keep if not marked for removal
+                file_path = os.path.join("output", stem_file)
+                if os.path.exists(file_path):
+                    stems_to_keep.append(file_path)
+                    print(f"Keeping {stem} stem")
+            else:
+                print(f"Removing {stem} stem")
+        
+        if not stems_to_keep:
+            raise Exception("Cannot remove all stems - at least one stem must remain")
+        
+        # Ensure final_output directory exists
+        final_output_dir = "final_output"
+        os.makedirs(final_output_dir, exist_ok=True)
+        
+        # Create output filename
+        output_filename = f"removed_stems_{unique_filename.split('_')[0]}.ogg"
+        output_filepath = os.path.join(final_output_dir, output_filename)
+        
+        if len(stems_to_keep) == 1:
+            # If only one stem remains, just convert it to OGG
+            subprocess.run(['ffmpeg', '-i', stems_to_keep[0], '-c:a', 'libvorbis', '-q:a', '6', output_filepath], check=True)
+        else:
+            # Merge multiple stems using FFmpeg
+            input_args = []
+            for stem_path in stems_to_keep:
+                input_args.extend(['-i', stem_path])
+            
+            # Build filter string for mixing
+            inputs_count = len(stems_to_keep)
+            filter_inputs = ''.join(f'[{i}:a]' for i in range(inputs_count))
+            filter_complex = f'{filter_inputs}amix=inputs={inputs_count}:duration=first:dropout_transition=2[out]'
+            
+            command = [
+                'ffmpeg',
+                *input_args,
+                '-filter_complex', filter_complex,
+                '-map', '[out]',
+                '-c:a', 'libvorbis',
+                '-q:a', '6',
+                output_filepath
+            ]
+            
+            subprocess.run(command, check=True)
+        
+        print(f"Processed audio saved: {output_filepath}")
+        
+        # Return the processed audio file
+        return StreamingResponse(
+            open(output_filepath, "rb"), 
+            media_type="audio/ogg",
+            headers={"Content-Disposition": f"attachment; filename={output_filename}"}
+        )
+        
+    except Exception as e:
+        print(f"Error during stem removal: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Stem removal failed: {str(e)}")
+    
+    finally:
+        # Clean up the uploaded file
+        if os.path.exists(unique_filename):
+            os.remove(unique_filename)
+        
+        # Clean up output directory
+        if os.path.exists("output"):
+            shutil.rmtree("output")
+            os.makedirs("output", exist_ok=True)
+
+@app.post("/remove_stems_youtube")
+async def remove_stems_youtube(link: str,
+                              vocals: bool = Form(False, description="Remove vocals from the audio"),
+                              drums: bool = Form(False, description="Remove drums from the audio"),
+                              bass: bool = Form(False, description="Remove bass from the audio"),
+                              guitar: bool = Form(False, description="Remove guitar from the audio"),
+                              piano: bool = Form(False, description="Remove piano from the audio"),
+                              other: bool = Form(False, description="Remove other instruments from the audio")):
+    """
+    Download audio from a YouTube video and remove selected stems.
+    
+    Uses htdemucs_6s model to separate into 6 stems and then removes the selected ones:
+    - Vocals
+    - Drums  
+    - Bass
+    - Guitar
+    - Piano
+    - Other
+    
+    Returns OGG audio file with the selected stems removed.
+    """
+    try:
+        # Download the YouTube audio
+        print(f"Downloading audio from YouTube: {link}")
+        filename = download_youtube_audio(link)
+        
+        if not os.path.exists(filename):
+            raise HTTPException(status_code=500, detail="Failed to download YouTube audio")
+        
+        print(f"Downloaded audio file: {filename}")
+        
+        # Get the filename without the path for the UploadFile object
+        audio_filename = os.path.basename(str(filename))
+        
+        # Call the remove_stems function with the downloaded file
+        with open(filename, 'rb') as f:
+            # Create an UploadFile object from the downloaded file with proper filename
+            upload_file = UploadFile(filename=audio_filename, file=f)
+            result = await remove_stems(upload_file, vocals, drums, bass, guitar, piano, other)
+        
+        # Clean up the downloaded file
+        if os.path.exists(filename):
+            os.remove(filename)
+            print(f"Cleaned up downloaded file: {filename}")
+        
+        return result
+        
+    except Exception as e:
+        print(f"Error during YouTube stem removal: {str(e)}")
+        # Clean up any downloaded files
+        if 'filename' in locals() and os.path.exists(filename):
+            os.remove(filename)
+        raise HTTPException(status_code=500, detail=f"YouTube stem removal failed: {str(e)}")
+
+
 @app.post("/separate_youtube_audio")
 async def separate_youtube_audio_6_stems(link: str):
     """
@@ -256,6 +444,7 @@ async def separate_youtube_audio_6_stems(link: str):
         if 'filename' in locals() and os.path.exists(filename):
             os.remove(filename)
         raise HTTPException(status_code=500, detail=f"YouTube audio separation failed: {str(e)}")
+
 
 def convert_mono_to_stereo(input_path: str, output_path: str):
     command = ['ffmpeg', '-i', input_path, '-ac', '2', output_path]
