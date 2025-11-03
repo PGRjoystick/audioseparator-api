@@ -13,6 +13,7 @@ pip install onnxruntime
 pip install onnxruntime-gpu
 pip install "audio-separator[gpu]"
 pip install fastapi python-dotenv uvicorn python-multipart
+pip install deepfilternet requests
 
 echo Setup complete.
 python separate.py

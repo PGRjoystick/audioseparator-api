@@ -19,10 +19,66 @@ import re
 from fastapi.responses import FileResponse
 import shutil
 import zipfile
+from df import enhance, init_df
+from df.io import load_audio, save_audio
 
 app = FastAPI()
 load_dotenv()
 voice2voice_endpoint = os.getenv('VOICE2VOICE_ENDPOINT')
+
+# Initialize DeepFilterNet model (lazy loading)
+deepfilter_model = None
+deepfilter_df_state = None
+deepfilter_lock = None
+
+def init_deepfilter():
+    """Initialize DeepFilterNet model once (lazy loading)"""
+    global deepfilter_model, deepfilter_df_state, deepfilter_lock
+    if deepfilter_model is None:
+        print("Initializing DeepFilterNet model...")
+        from threading import Lock
+        if deepfilter_lock is None:
+            deepfilter_lock = Lock()
+        with deepfilter_lock:
+            if deepfilter_model is None:  # Double-check after acquiring lock
+                deepfilter_model, deepfilter_df_state, _ = init_df()
+                print("DeepFilterNet model initialized successfully")
+    return deepfilter_model, deepfilter_df_state
+
+def apply_deepfilter_noise_reduction(input_audio_path: str, output_audio_path: str) -> str:
+    """
+    Apply DeepFilterNet noise reduction to an audio file.
+    
+    Args:
+        input_audio_path: Path to input audio file
+        output_audio_path: Path to save denoised audio file
+        
+    Returns:
+        Path to the denoised audio file
+    """
+    try:
+        print(f"Applying DeepFilterNet noise reduction to: {input_audio_path}")
+        
+        # Initialize model (lazy loading)
+        model, df_state = init_deepfilter()
+        
+        # Load audio
+        audio, sr = load_audio(input_audio_path, sr=df_state.sr())
+        
+        # Enhance audio (remove noise)
+        enhanced_audio = enhance(model, df_state, audio)
+        
+        # Save enhanced audio
+        save_audio(output_audio_path, enhanced_audio, df_state.sr())
+        
+        print(f"DeepFilterNet noise reduction complete: {output_audio_path}")
+        return output_audio_path
+        
+    except Exception as e:
+        print(f"Error applying DeepFilterNet: {str(e)}")
+        # If DeepFilterNet fails, return original file path
+        print("Falling back to original audio without noise reduction")
+        return input_audio_path
 
 import time
 
@@ -118,6 +174,135 @@ async def separate_vocals(file: UploadFile = File(...)):
     os.remove(unique_filename)
 
     return StreamingResponse(open(mp3_file_path, "rb"), media_type="audio/mpeg")
+
+@app.post("/denoise")
+async def denoise_audio(file: UploadFile = File(..., description="The audio file to denoise."),
+                       output_format: str = Form("mp3", description="Output format: mp3, wav, or ogg")):
+    """
+    Apply DeepFilterNet3 noise reduction to an audio file without any other processing.
+    
+    This endpoint is useful for:
+    - Removing background noise from recordings
+    - Cleaning up audio before further processing
+    - Enhancing speech clarity in noisy environments
+    - Removing hiss, hum, or other unwanted sounds
+    
+    Returns the denoised audio in the specified format.
+    """
+    # Save the uploaded file to disk
+    filename = Path(file.filename).name
+    unique_filename = str(uuid.uuid4()) + "_" + filename
+    upload_path = os.path.join("upload", unique_filename)
+    
+    # Ensure upload directory exists
+    os.makedirs("upload", exist_ok=True)
+    
+    with open(upload_path, "wb") as f:
+        f.write(await file.read())
+
+    try:
+        # Ensure output directory exists
+        os.makedirs("final_output", exist_ok=True)
+        
+        # Apply DeepFilterNet noise reduction
+        print(f"#################### Applying DeepFilterNet noise reduction to: {upload_path}")
+        denoised_filename = f"denoised_{unique_filename.rsplit('.', 1)[0]}.wav"
+        denoised_path = os.path.join("final_output", denoised_filename)
+        
+        apply_deepfilter_noise_reduction(upload_path, denoised_path)
+        
+        if not os.path.exists(denoised_path):
+            raise HTTPException(status_code=500, detail="Noise reduction failed")
+        
+        print(f"#################### DeepFilterNet noise reduction complete: {denoised_path}")
+        
+        # Convert to requested format if not wav
+        if output_format.lower() != "wav":
+            output_filename = f"denoised_{unique_filename.rsplit('.', 1)[0]}.{output_format.lower()}"
+            output_path = os.path.join("final_output", output_filename)
+            
+            # Set codec based on format
+            if output_format.lower() == "mp3":
+                codec_args = ['-c:a', 'libmp3lame', '-q:a', '2']
+                media_type = "audio/mpeg"
+            elif output_format.lower() == "ogg":
+                codec_args = ['-c:a', 'libvorbis', '-q:a', '6']
+                media_type = "audio/ogg"
+            else:
+                # Default to mp3 if format not recognized
+                codec_args = ['-c:a', 'libmp3lame', '-q:a', '2']
+                media_type = "audio/mpeg"
+                output_format = "mp3"
+            
+            # Convert using FFmpeg
+            subprocess.run(['ffmpeg', '-i', denoised_path, *codec_args, output_path], check=True)
+            os.remove(denoised_path)  # Remove intermediate wav file
+            final_path = output_path
+        else:
+            final_path = denoised_path
+            media_type = "audio/wav"
+        
+        # Return the denoised audio file
+        return StreamingResponse(
+            open(final_path, "rb"), 
+            media_type=media_type,
+            headers={"Content-Disposition": f"attachment; filename=denoised_{filename.rsplit('.', 1)[0]}.{output_format.lower()}"}
+        )
+        
+    except Exception as e:
+        print(f"Error during noise reduction: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Noise reduction failed: {str(e)}")
+    
+    finally:
+        # Clean up the uploaded file
+        if os.path.exists(upload_path):
+            os.remove(upload_path)
+
+@app.post("/denoise_youtube")
+async def denoise_youtube(link: str = Form(..., description="YouTube video URL"),
+                         output_format: str = Form("mp3", description="Output format: mp3, wav, or ogg")):
+    """
+    Download audio from a YouTube video and apply DeepFilterNet3 noise reduction.
+    
+    This is useful for:
+    - Cleaning up audio from YouTube videos
+    - Removing background noise from video content
+    - Preparing YouTube audio for further processing
+    
+    Returns the denoised audio in the specified format.
+    """
+    try:
+        # Download the YouTube audio
+        print(f"Downloading audio from YouTube: {link}")
+        filename = download_youtube_audio(link)
+        
+        if not os.path.exists(filename):
+            raise HTTPException(status_code=500, detail="Failed to download YouTube audio")
+        
+        print(f"Downloaded audio file: {filename}")
+        
+        # Get the filename without the path for the UploadFile object
+        audio_filename = os.path.basename(str(filename))
+        
+        # Call the denoise function with the downloaded file
+        with open(filename, 'rb') as f:
+            # Create an UploadFile object from the downloaded file with proper filename
+            upload_file = UploadFile(filename=audio_filename, file=f)
+            result = await denoise_audio(upload_file, output_format)
+        
+        # Clean up the downloaded file
+        if os.path.exists(filename):
+            os.remove(filename)
+            print(f"Cleaned up downloaded file: {filename}")
+        
+        return result
+        
+    except Exception as e:
+        print(f"Error during YouTube audio denoising: {str(e)}")
+        # Clean up any downloaded files
+        if 'filename' in locals() and os.path.exists(filename):
+            os.remove(filename)
+        raise HTTPException(status_code=500, detail=f"YouTube audio denoising failed: {str(e)}")
 
 @app.post("/separate")
 async def separate_6_stems(file: UploadFile = File(..., description="The audio file to separate into 6 stems.")):
@@ -529,6 +714,7 @@ async def sing_audio(file: UploadFile = File(..., description="The audio file to
                     protect: float = Form(0.3, description="Protect voiceless consonants and breath sounds to prevent artifacts such as tearing in electronic music. Set to 0.5 to disable. Decrease the value to increase protection, but it may reduce indexing accuracy."),
                     multi_process_vocal: bool = Form(False, description="When multi process vocal is set to true, the UVR server will process the vocal stem further using additional model with 'UVR-MDX-NET_Crowd_HQ_1.onnx' and 'Reverb_HQ_By_FoxJoy.onnx'. This will increase the processing time. but this will clean additional reverb and crowd noise from the vocal stem. potentially making the vocal stem sound cleaner with music that has more reverb and crowd noise."),
                     no_reverb: bool = Form(False, description="When set to true, reverb and echo tracks will not be mixed into the final output, resulting in a cleaner vocal without reverb effects."),
+                    enable_denoise: bool = Form(False, description="When set to true, applies DeepFilterNet3 noise reduction to the separated vocals before voice conversion. This can significantly improve the quality by removing background noise and artifacts."),
                     link: Optional[str] = Form(None, description="Link to the YouTube video to process.")):
     
     if link:
@@ -612,6 +798,19 @@ async def sing_audio(file: UploadFile = File(..., description="The audio file to
     vocal_file_path = os.path.join("output", output_file_vocals)
     instrumental_file_path = os.path.join("output", output_file_instrumental)
     if os.path.exists(vocal_file_path):
+        # Apply DeepFilterNet noise reduction if enabled
+        if enable_denoise:
+            print("#################### Applying DeepFilterNet noise reduction to vocals...")
+            denoised_vocal_path = vocal_file_path.rsplit('.', 1)[0] + '_denoised.wav'
+            apply_deepfilter_noise_reduction(vocal_file_path, denoised_vocal_path)
+            # Replace the vocal file with the denoised version if it was created successfully
+            if os.path.exists(denoised_vocal_path):
+                os.remove(vocal_file_path)
+                vocal_file_path = denoised_vocal_path
+                print("#################### DeepFilterNet noise reduction applied successfully!")
+            else:
+                print("#################### DeepFilterNet failed, continuing with original vocals")
+        
         # Convert to MP3
         mp3_vocal_file_path = vocal_file_path.rsplit('.', 1)[0] + '.mp3'
         subprocess.run(['ffmpeg', '-i', vocal_file_path, mp3_vocal_file_path])
@@ -979,7 +1178,8 @@ async def sing_youtube( link: str,
                         rms_mix_rate: float = Form(0.6, description="Adjust the volume envelope scaling. Closer to 0, the more it mimicks the volume of the original vocals. Can help mask noise and make volume sound more natural when set relatively low. Closer to 1 will be more of a consistently loud volume."),
                         protect: float = Form(0.3, description="Protect voiceless consonants and breath sounds to prevent artifacts such as tearing in electronic music. Set to 0.5 to disable. Decrease the value to increase protection, but it may reduce indexing accuracy."),
                         multi_process_vocal: bool = Form(False, description="When multi process vocal is set to true, the UVR server will process the vocal stem further using additional model with 'UVR-MDX-NET_Crowd_HQ_1.onnx' and 'Reverb_HQ_By_FoxJoy.onnx'. This will increase the processing time. but this will clean additional reverb and crowd noise from the vocal stem. potentially making the vocal stem sound cleaner with music that has more reverb and crowd noise."),
-                        no_reverb: bool = Form(False, description="When set to true, reverb and echo tracks will not be mixed into the final output, resulting in a cleaner vocal without reverb effects.")):
+                        no_reverb: bool = Form(False, description="When set to true, reverb and echo tracks will not be mixed into the final output, resulting in a cleaner vocal without reverb effects."),
+                        enable_denoise: bool = Form(False, description="When set to true, applies DeepFilterNet3 noise reduction to the separated vocals before voice conversion. This can significantly improve the quality by removing background noise and artifacts.")):
     
     # Check if the link is available
     video_id = extract_youtube_video_id(link)
@@ -1012,7 +1212,7 @@ async def sing_youtube( link: str,
     # Call the sing_audio function with the downloaded file
     with open(filename, 'rb') as f:
         upload_file = UploadFile(filename=filename, file=f)
-        return await sing_audio(upload_file, model_name, index_path, f0up_key, f0method, index_rate, device, is_half, filter_radius, resample_sr, rms_mix_rate, protect, multi_process_vocal, no_reverb, link=link)
+        return await sing_audio(upload_file, model_name, index_path, f0up_key, f0method, index_rate, device, is_half, filter_radius, resample_sr, rms_mix_rate, protect, multi_process_vocal, no_reverb, enable_denoise, link=link)
 
 if __name__ == "__main__":
     uvicorn.run("separate:app", host="0.0.0.0", port=8100, log_level="info")

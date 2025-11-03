@@ -10,12 +10,26 @@ by utilizing both the UVR and RVC technologies, AudioSeparator-API offers a comp
 
 The API consists of several endpoints, each tailored to handle different aspects of audio separation. Below is an overview of the available endpoints:
 
-- `/separate_instrumental`: Separate and output instrumental stem from an audio file.
-- `/separate_vocals`: Separate and output vocal stem from an audio file.
+### Audio Separation
+- `/separate_instrumental`: Separate and output instrumental stem from an audio file
+- `/separate_vocals`: Separate and output vocal stem from an audio file
+- `/separate`: Separate audio into 6 stems (vocals, drums, bass, guitar, piano, other)
+- `/remove_stems`: Remove selected stems from audio
+- `/remove_stems_youtube`: Remove selected stems from YouTube video audio
+
+### 🆕 Noise Reduction (DeepFilterNet3)
+- `/denoise`: Apply AI-powered noise reduction to uploaded audio files
+- `/denoise_youtube`: Apply AI-powered noise reduction to YouTube video audio
+
+### AI Voice Generation
 - `/sing_youtube`: Generate a singing AI voice from a YouTube video using RVC Server
 - `/sing_audio`: Generate a singing AI voice from an audio file using RVC Server
+
+### YouTube Utilities
 - `/download_youtube_audio`: Download audio from a YouTube video
 - `/download_youtube_video`: Download a YouTube video
+- `/download_youtube_h264`: Download and compress YouTube video to H.264 format
+- `/separate_youtube_audio`: Download and separate YouTube audio into 6 stems
 
 ### Additional setup for singing AI voice endpoint
 
@@ -30,6 +44,33 @@ To utilize these endpoints, you must have an RVC server operational, either host
 
 This setup is necessary because the pull request has not been merged into the main RVC repository yet. However, it has been tested and confirmed to work perfectly.
 
+### 🆕 Noise Reduction Feature
+
+The `/denoise` and `/denoise_youtube` endpoints use **DeepFilterNet3**, a state-of-the-art AI noise reduction model:
+
+- **Requirements** - Rust must be installed (see Installation section)
+- **Auto-download** - Model downloads automatically on first use
+- **Fast processing** - Real-time capable on both GPU and CPU
+- **High quality** - Preserves speech naturalness while removing noise
+- **Multiple formats** - Supports MP3, WAV, and OGG output
+
+For detailed information about the noise reduction integration, see [DEEPFILTERNET_INTEGRATION.md](DEEPFILTERNET_INTEGRATION.md).
+
+#### Quick Example
+
+```bash
+# Remove noise from an audio file
+curl -X POST "http://localhost:8100/denoise" \
+  -F "file=@noisy_audio.mp3" \
+  -F "output_format=mp3" \
+  -o clean_audio.mp3
+
+# Remove noise from YouTube video
+curl -X POST "http://localhost:8100/denoise_youtube" \
+  -F "link=https://youtube.com/watch?v=VIDEO_ID" \
+  -o clean_youtube.mp3
+```
+
 ## Installation and Setup
 
 To install and set up AudioSeparator-API, ensure the following requirements are met:
@@ -39,11 +80,12 @@ To install and set up AudioSeparator-API, ensure the following requirements are 
 - [NVIDIA CUDA Toolkit 11.8](https://developer.nvidia.com/cuda-11-8-0-download-archive) installed
 - [NVIDIA cuDNN](https://developer.nvidia.com/cudnn) installed
 - [FFmpeg](https://www.gyan.dev/ffmpeg/builds/) and [yt-dlp](https://github.com/yt-dlp/yt-dlp) Installed and added to `PATH`
-- Run the `start.bat` file to complete the setup.
+- **🆕 [Rust](https://rustup.rs/)** - Required for DeepFilterNet noise reduction feature
+- Run the `start.bat` (Windows) or `start.sh` (Linux) file to complete the setup.
 
 ### Compatibility
 
-Currently, AudioSeparator-API has been tested on Windows 10 with an RTX 3060Ti 8GB GPU and Python 3.10. While it has not been tested on other platforms or Python versions, it is possible to modify the dependencies to accommodate other setups. At this time, setup scripts are provided for Windows only.
+Currently, AudioSeparator-API has been tested on Windows 10 with an RTX 3060Ti 8GB GPU and Python 3.10. While it has not been tested on other platforms or Python versions, it is possible to modify the dependencies to accommodate other setups. setup scripts for both Windows and Linux are provided though.
 
 ## Contributing
 
