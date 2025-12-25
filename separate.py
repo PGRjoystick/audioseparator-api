@@ -889,7 +889,7 @@ def download_youtube_audio_and_convert(link: str):
     filename_mp3 = filename_webm.replace(".webm", ".mp3")
 
     # Run yt-dlp as a subprocess to download the video
-    yt_dlp_result = subprocess.run(["yt-dlp", link, "-f", "ba", "-o", filename_webm], capture_output=True, text=True)
+    yt_dlp_result = subprocess.run(["yt-dlp", "--cookies", "ytcookies.txt", "--remote-components", "ejs:github", link, "-f", "ba", "-o", filename_webm], capture_output=True, text=True)
 
     # If yt-dlp subprocess exited with a non-zero status code, raise an HTTP exception
     if yt_dlp_result.returncode != 0:
@@ -912,7 +912,7 @@ def download_youtube_audio(link: str):
     filename = download_dir / f"{video_id}.webm"
 
     # Run yt-dlp as a subprocess to download the video
-    result = subprocess.run(["yt-dlp", link, "-f", "ba", "-o", str(filename)], capture_output=True, text=True)
+    result = subprocess.run(["yt-dlp", "--cookies", "ytcookies.txt", "--remote-components", "ejs:github", link, "-f", "ba", "-o", str(filename)], capture_output=True, text=True)
 
     # If the subprocess exited with a non-zero status code, raise an HTTP exception with the error output
     if result.returncode != 0:
@@ -925,7 +925,7 @@ def download_youtube_video(link: str):
     filename = str(uuid.uuid4()) + ".webm"
 
     # Run yt-dlp as a subprocess to download the video
-    result = subprocess.run(["yt-dlp", link, "-o", filename, ], capture_output=True, text=True)
+    result = subprocess.run(["yt-dlp", "--cookies", "ytcookies.txt", "--remote-components", "ejs:github", link, "-o", filename], capture_output=True, text=True)
 
     # If the subprocess exited with a non-zero status code, raise an HTTP exception with the error output
     if result.returncode != 0:
@@ -968,7 +968,9 @@ async def download_youtube_h264(link: str, use_gpu: bool = True, max_height: int
             format_string = f"bestvideo[height<={max_height}][ext=mp4]+bestaudio[ext=m4a]/best[height<={max_height}]"
             
             result = subprocess.run(
-                ["yt-dlp", 
+                ["yt-dlp",
+                 "--cookies", "ytcookies.txt",
+                 "--remote-components", "ejs:github",
                  "--no-playlist",
                  "-f", format_string, 
                  "-o", temp_filename, 
