@@ -40,7 +40,20 @@ To utilize these endpoints, you must have an RVC server operational, either host
 1. Clone the RVC repository: `https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI` and setup the project
 2. Manually merge the pull request from `https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI/pull/1614`
 3. Run `rvc_fastapi.py` to start the server.
-4. rename the `.env-example` into `.env` and change your host and port of the RVC API server
+
+#### Environment Configuration
+
+The `start.sh` script will automatically prompt you to configure the Voice2Voice endpoint on first run. You can also:
+
+- **Reconfigure anytime**: Run `./configure_endpoint.sh` to update your endpoint
+- **Manual setup**: Create a `.env` file with:
+  ```bash
+  VOICE2VOICE_ENDPOINT=http://localhost:8001/voice2voice
+  ```
+  Or for remote server:
+  ```bash
+  VOICE2VOICE_ENDPOINT=http://192.168.1.100:8001/voice2voice
+  ```
 
 This setup is necessary because the pull request has not been merged into the main RVC repository yet. However, it has been tested and confirmed to work perfectly.
 
@@ -72,6 +85,8 @@ curl -X POST "http://localhost:8100/denoise_youtube" \
 ```
 
 ## Installation and Setup
+
+📖 **[See detailed setup guide](SETUP_GUIDE.md)** for interactive configuration and troubleshooting.
 
 To install and set up AudioSeparator-API, ensure the following requirements are met:
 

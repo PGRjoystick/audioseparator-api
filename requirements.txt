@@ -1,8 +1,9 @@
 fastapi
 uvicorn
 audio-separator
-torch
-torchaudio
+torch<2.5,>=2.4
+torchaudio<2.5,>=2.4
+numpy>=2.0
 requests
 python-dotenv
 yt-dlp
