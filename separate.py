@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Request
 from audio_separator.separator import Separator
 from starlette.responses import StreamingResponse
 import os
@@ -21,8 +21,47 @@ import shutil
 import zipfile
 from df import enhance, init_df
 from df.io import load_audio, save_audio
+import logging
+import traceback
+import shutil
+
+# Resolve yt-dlp absolute path so it works even when PATH is limited (e.g. systemd)
+YT_DLP = shutil.which("yt-dlp") or "/home/joysky/.local/bin/yt-dlp"
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
+
+# Global exception handler to log all 500 errors with full stack trace
+@app.middleware("http")
+async def catch_exceptions_middleware(request: Request, call_next):
+    try:
+        return await call_next(request)
+    except Exception as e:
+        logger.error(f"Unhandled exception for {request.method} {request.url}")
+        logger.error(f"Query params: {request.query_params}")
+        logger.error(f"Exception type: {type(e).__name__}")
+        logger.error(f"Exception message: {str(e)}")
+        logger.error(f"Full traceback:\n{traceback.format_exc()}")
+        raise
+
+# Custom exception handler for HTTPException
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Exception handler caught: {request.method} {request.url}")
+    logger.error(f"Query params: {request.query_params}")
+    logger.error(f"Exception type: {type(exc).__name__}")
+    logger.error(f"Exception message: {str(exc)}")
+    logger.error(f"Full traceback:\n{traceback.format_exc()}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": str(exc), "type": type(exc).__name__}
+    )
 load_dotenv()
 voice2voice_endpoint = os.getenv('VOICE2VOICE_ENDPOINT')
 
@@ -889,7 +928,7 @@ def download_youtube_audio_and_convert(link: str):
     filename_mp3 = filename_webm.replace(".webm", ".mp3")
 
     # Run yt-dlp as a subprocess to download the video
-    yt_dlp_result = subprocess.run(["yt-dlp", "--cookies", "ytcookies.txt", "--remote-components", "ejs:github", link, "-f", "ba", "-o", filename_webm], capture_output=True, text=True)
+    yt_dlp_result = subprocess.run([YT_DLP, "--cookies", "ytcookies.txt", "--remote-components", "ejs:github", link, "-f", "ba", "-o", filename_webm], capture_output=True, text=True)
 
     # If yt-dlp subprocess exited with a non-zero status code, raise an HTTP exception
     if yt_dlp_result.returncode != 0:
@@ -911,12 +950,54 @@ def download_youtube_audio(link: str):
     download_dir.mkdir(parents=True, exist_ok=True)  # Ensure the directory exists
     filename = download_dir / f"{video_id}.webm"
 
+    logger.info(f"[yt-dlp] Starting download for video_id: {video_id}")
+    logger.info(f"[yt-dlp] Target filename: {filename}")
+    logger.info(f"[yt-dlp] File already exists: {filename.exists()}")
+
+    # Check if file already exists and is valid
+    if filename.exists():
+        file_size = filename.stat().st_size
+        logger.info(f"[yt-dlp] Existing file size: {file_size} bytes")
+        if file_size > 0:
+            logger.info(f"[yt-dlp] Using existing file: {filename}")
+            return filename
+        else:
+            logger.warning(f"[yt-dlp] Existing file is empty, removing and re-downloading")
+            filename.unlink()
+
+    # Build the command
+    cmd = [YT_DLP, "--cookies", "ytcookies.txt", "--remote-components", "ejs:github", link, "-f", "ba", "-o", str(filename)]
+    logger.info(f"[yt-dlp] Running command: {' '.join(cmd)}")
+
     # Run yt-dlp as a subprocess to download the video
-    result = subprocess.run(["yt-dlp", "--cookies", "ytcookies.txt", "--remote-components", "ejs:github", link, "-f", "ba", "-o", str(filename)], capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True)
+
+    # Log the output regardless of success/failure
+    logger.info(f"[yt-dlp] Return code: {result.returncode}")
+    if result.stdout:
+        logger.info(f"[yt-dlp] STDOUT:\n{result.stdout}")
+    if result.stderr:
+        logger.warning(f"[yt-dlp] STDERR:\n{result.stderr}")
 
     # If the subprocess exited with a non-zero status code, raise an HTTP exception with the error output
     if result.returncode != 0:
-        raise HTTPException(status_code=500, detail=result.stderr)
+        error_msg = f"yt-dlp failed for {link}. Return code: {result.returncode}. STDERR: {result.stderr}. STDOUT: {result.stdout}"
+        logger.error(f"[yt-dlp] {error_msg}")
+        raise HTTPException(status_code=500, detail=error_msg)
+
+    # Verify the file was actually created
+    if not filename.exists():
+        error_msg = f"yt-dlp completed but file not found: {filename}"
+        logger.error(f"[yt-dlp] {error_msg}")
+        raise HTTPException(status_code=500, detail=error_msg)
+
+    file_size = filename.stat().st_size
+    logger.info(f"[yt-dlp] Download complete. File size: {file_size} bytes")
+
+    if file_size == 0:
+        error_msg = f"yt-dlp created empty file: {filename}"
+        logger.error(f"[yt-dlp] {error_msg}")
+        raise HTTPException(status_code=500, detail=error_msg)
 
     return filename
 
@@ -925,7 +1006,7 @@ def download_youtube_video(link: str):
     filename = str(uuid.uuid4()) + ".webm"
 
     # Run yt-dlp as a subprocess to download the video
-    result = subprocess.run(["yt-dlp", "--cookies", "ytcookies.txt", "--remote-components", "ejs:github", link, "-o", filename], capture_output=True, text=True)
+    result = subprocess.run([YT_DLP, "--cookies", "ytcookies.txt", "--remote-components", "ejs:github", link, "-o", filename], capture_output=True, text=True)
 
     # If the subprocess exited with a non-zero status code, raise an HTTP exception with the error output
     if result.returncode != 0:
@@ -968,7 +1049,7 @@ async def download_youtube_h264(link: str, use_gpu: bool = True, max_height: int
             format_string = f"bestvideo[height<={max_height}][ext=mp4]+bestaudio[ext=m4a]/best[height<={max_height}]"
             
             result = subprocess.run(
-                ["yt-dlp",
+                [YT_DLP,
                  "--cookies", "ytcookies.txt",
                  "--remote-components", "ejs:github",
                  "--no-playlist",
